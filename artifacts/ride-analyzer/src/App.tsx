@@ -1,344 +1,1034 @@
-import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
+import {
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import {
-  ArrowDownRight,
-  ArrowUpRight,
-  CalendarDays,
+  Activity,
   CarFront,
   Check,
   ChevronRight,
   CircleDot,
   Clock3,
-  Database,
-  Fuel,
+  Droplets,
   Gauge,
+  History,
   Info,
+  LocateFixed,
   MapPin,
-  Pencil,
+  Navigation,
+  Pause,
+  Play,
   Plus,
-  RotateCcw,
   Route as RouteIcon,
-  Search,
-  SlidersHorizontal,
-  Sparkles,
+  Smartphone,
   Timer,
   Trash2,
   TrendingUp,
   X,
-  type LucideIcon,
+  Zap,
 } from 'lucide-react';
-import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
+import { Route, Router as WouterRouter, Switch, useLocation } from 'wouter';
 
 const queryClient = new QueryClient();
-const STORAGE_KEY = 'ride-analyzer-rides-v1';
+const STORAGE_KEY = 'ride-analyzer-live-rides-v1';
+
+type WaitingPeriod = {
+  id: string;
+  startAt: string;
+  endAt: string;
+  durationSeconds: number;
+};
+
+type FuelEntry = {
+  id: string;
+  addedAt: string;
+  litres: number;
+  pricePerLitre: number;
+};
 
 type Ride = {
   id: string;
-  date: string;
   label: string;
+  date: string;
+  startedAt: string;
+  endedAt: string;
   distanceKm: number;
   fuelLitres: number;
+  fuelCost: number;
   durationMinutes: number;
   trafficWaitMinutes: number;
   averageSpeedKmh: number;
   topSpeedKmh: number;
-  fuelPricePerLitre: number;
-  notes: string;
+  waitingPeriods: WaitingPeriod[];
+  fuelEntries: FuelEntry[];
 };
 
-type RideForm = Omit<Ride, 'id'>;
+type LiveStats = {
+  elapsedSeconds: number;
+  speedKmh: number | null;
+  averageSpeedKmh: number;
+  topSpeedKmh: number;
+  distanceKm: number;
+  waitingSeconds: number;
+  waitingPeriods: WaitingPeriod[];
+  fuelLitres: number;
+  fuelCost: number;
+};
 
-const seedRides: Ride[] = [
-  { id: 'seed-1', date: '2025-04-18', label: 'Home → studio', distanceKm: 18.6, fuelLitres: 1.42, durationMinutes: 37, trafficWaitMinutes: 8, averageSpeedKmh: 30.2, topSpeedKmh: 68, fuelPricePerLitre: 1.79, notes: 'A smooth Friday loop. Light on the ring road.' },
-  { id: 'seed-2', date: '2025-04-21', label: 'Studio → coast', distanceKm: 42.8, fuelLitres: 3.18, durationMinutes: 51, trafficWaitMinutes: 5, averageSpeedKmh: 50.4, topSpeedKmh: 91, fuelPricePerLitre: 1.81, notes: 'Open road after the tolls.' },
-  { id: 'seed-3', date: '2025-04-23', label: 'Market run', distanceKm: 11.2, fuelLitres: 1.04, durationMinutes: 29, trafficWaitMinutes: 12, averageSpeedKmh: 23.2, topSpeedKmh: 54, fuelPricePerLitre: 1.83, notes: 'School pickup traffic.' },
-  { id: 'seed-4', date: '2025-04-25', label: 'Home → studio', distanceKm: 18.6, fuelLitres: 1.31, durationMinutes: 34, trafficWaitMinutes: 4, averageSpeedKmh: 32.8, topSpeedKmh: 71, fuelPricePerLitre: 1.84, notes: 'Best commute this month.' },
-  { id: 'seed-5', date: '2025-04-27', label: 'Hillside lookout', distanceKm: 67.4, fuelLitres: 5.16, durationMinutes: 76, trafficWaitMinutes: 7, averageSpeedKmh: 53.2, topSpeedKmh: 96, fuelPricePerLitre: 1.82, notes: 'Long climb, cool air, worth the detour.' },
-];
+type MotionPermission = 'unknown' | 'requesting' | 'granted' | 'denied';
+type TrackingPhase = 'ready' | 'active' | 'summary';
 
-const todayString = () => new Date().toISOString().slice(0, 10);
+type MotionEventConstructor = typeof DeviceMotionEvent & {
+  requestPermission?: () => Promise<'granted' | 'denied'>;
+};
 
-const initialForm = (): RideForm => ({
-  date: todayString(),
-  label: '',
-  distanceKm: 0,
-  fuelLitres: 0,
-  durationMinutes: 0,
-  trafficWaitMinutes: 0,
+const emptyStats: LiveStats = {
+  elapsedSeconds: 0,
+  speedKmh: null,
   averageSpeedKmh: 0,
   topSpeedKmh: 0,
-  fuelPricePerLitre: 1.85,
-  notes: '',
-});
+  distanceKm: 0,
+  waitingSeconds: 0,
+  waitingPeriods: [],
+  fuelLitres: 0,
+  fuelCost: 0,
+};
 
 const readRides = (): Ride[] => {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) return JSON.parse(stored) as Ride[];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(seedRides));
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? (JSON.parse(saved) as Ride[]) : [];
   } catch {
-    return seedRides;
+    return [];
   }
-  return seedRides;
 };
 
-const formatNumber = (value: number, digits = 1) => Number.isFinite(value) ? value.toFixed(digits) : '0.0';
-const money = (value: number) => `€${value.toFixed(2)}`;
-const formatDate = (value: string) => new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(`${value}T12:00:00`));
-const movingMinutes = (ride: Pick<Ride, 'durationMinutes' | 'trafficWaitMinutes'>) => Math.max(ride.durationMinutes - ride.trafficWaitMinutes, 0);
-const economy = (ride: Pick<Ride, 'distanceKm' | 'fuelLitres'>) => ride.fuelLitres > 0 ? ride.distanceKm / ride.fuelLitres : 0;
-const cost = (ride: Pick<Ride, 'fuelLitres' | 'fuelPricePerLitre'>) => ride.fuelLitres * ride.fuelPricePerLitre;
-const trafficPercent = (ride: Pick<Ride, 'durationMinutes' | 'trafficWaitMinutes'>) => ride.durationMinutes > 0 ? (ride.trafficWaitMinutes / ride.durationMinutes) * 100 : 0;
-const movingSpeed = (ride: Pick<Ride, 'distanceKm' | 'durationMinutes' | 'trafficWaitMinutes'>) => movingMinutes(ride) > 0 ? ride.distanceKm / (movingMinutes(ride) / 60) : 0;
-const sortNewest = (rides: Ride[]) => [...rides].sort((a, b) => `${b.date}-${b.id}`.localeCompare(`${a.date}-${a.id}`));
+const todayString = () => new Date().toISOString().slice(0, 10);
+const formatNumber = (value: number, digits = 1) =>
+  Number.isFinite(value) ? value.toFixed(digits) : '0.0';
+const formatDuration = (seconds: number) => {
+  const safe = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const remainingSeconds = safe % 60;
+  return hours > 0
+    ? `${hours}h ${String(minutes).padStart(2, '0')}m`
+    : `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+};
+const formatClock = (value: string) =>
+  new Intl.DateTimeFormat('en', {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(value));
+const formatDateTime = (value: string) =>
+  new Intl.DateTimeFormat('en', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value));
+const formatDate = (value: string) =>
+  new Intl.DateTimeFormat('en', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }).format(new Date(`${value}T12:00:00`));
+const sumWaiting = (periods: WaitingPeriod[]) =>
+  periods.reduce((total, period) => total + period.durationSeconds, 0);
+const haversineMetres = (
+  latitudeA: number,
+  longitudeA: number,
+  latitudeB: number,
+  longitudeB: number,
+) => {
+  const earthRadius = 6371000;
+  const latitudeDelta = ((latitudeB - latitudeA) * Math.PI) / 180;
+  const longitudeDelta = ((longitudeB - longitudeA) * Math.PI) / 180;
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos((latitudeA * Math.PI) / 180) *
+      Math.cos((latitudeB * Math.PI) / 180) *
+      Math.sin(longitudeDelta / 2) ** 2;
+  return earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
 
-function Field({ label, suffix, children, wide = false }: { label: string; suffix?: string; children: ReactNode; wide?: boolean }) {
+function SensorPill({
+  icon: Icon,
+  label,
+  active = false,
+}: {
+  icon: typeof Activity;
+  label: string;
+  active?: boolean;
+}) {
   return (
-    <label className={`block ${wide ? 'sm:col-span-2' : ''}`}>
-      <span className="mb-1.5 flex items-center justify-between text-[11px] font-semibold uppercase tracking-[.12em] text-slate-500">
-        {label}
-        {suffix && <span className="font-mono normal-case tracking-normal text-slate-400">{suffix}</span>}
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.12em] ${
+        active
+          ? 'border-[#baca88]/40 bg-[#baca88]/10 text-[#c8d796]'
+          : 'border-[#526073] bg-transparent text-[#9da8ae]'
+      }`}
+    >
+      <Icon size={12} />
+      {label}
+    </span>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  unit,
+  icon: Icon,
+  accent = 'orange',
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  icon: typeof Gauge;
+  accent?: 'orange' | 'lime' | 'blue' | 'ink';
+}) {
+  const colors = {
+    orange: 'bg-[#f8d9cc] text-[#cc5b38]',
+    lime: 'bg-[#e6edc4] text-[#61752d]',
+    blue: 'bg-[#d8e8e7] text-[#367271]',
+    ink: 'bg-[#dfe5eb] text-[#344354]',
+  };
+  return (
+    <div className="rounded-2xl border border-[#ded7ca] bg-[#faf7ef] p-4">
+      <span className={`grid h-8 w-8 place-items-center rounded-lg ${colors[accent]}`}>
+        <Icon size={16} />
       </span>
-      {children}
-    </label>
-  );
-}
-
-function Input({ className = '', ...props }: React.InputHTMLAttributes<HTMLInputElement> & { className?: string }) {
-  return <input {...props} className={`h-11 w-full rounded-xl border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3.5 text-sm text-[hsl(var(--foreground))] outline-none transition placeholder:text-slate-400 focus:border-[hsl(var(--primary))] focus:ring-4 focus:ring-[hsl(var(--primary)/.14)] ${className}`} />;
-}
-
-function StatTile({ icon: Icon, label, value, unit, accent = 'orange', detail }: { icon: LucideIcon; label: string; value: string; unit?: string; accent?: 'orange' | 'lime' | 'ink' | 'blue'; detail?: string }) {
-  const accentClass = { orange: 'bg-[#ffe0d3] text-[#da5a31]', lime: 'bg-[#e6edc4] text-[#5b6f2d]', ink: 'bg-[#dfe5eb] text-[#344354]', blue: 'bg-[#d8e8e7] text-[#367271]' }[accent];
-  return (
-    <div data-testid={`stat-${label.toLowerCase().replaceAll(' ', '-')}`} className="group rounded-2xl border border-[#dfd9cc] bg-[hsl(var(--card))] p-4 transition duration-200 hover:-translate-y-0.5 hover:border-[#c7bfb0]">
-      <div className="mb-4 flex items-center justify-between">
-        <span className={`grid h-8 w-8 place-items-center rounded-lg ${accentClass}`}><Icon size={16} strokeWidth={2.2} /></span>
-        {detail && <span className="text-[11px] font-medium text-slate-500">{detail}</span>}
+      <div className="mt-5 flex items-end gap-1.5">
+        <strong className="font-mono text-[25px] leading-none tracking-[-.08em] text-[#222a39]">
+          {value}
+        </strong>
+        {unit && <span className="pb-0.5 text-xs text-slate-500">{unit}</span>}
       </div>
-      <div className="flex items-end gap-1.5">
-        <strong className="font-mono text-[25px] leading-none tracking-[-.08em] text-[#222a39]">{value}</strong>
-        {unit && <span className="pb-0.5 text-xs font-medium text-slate-500">{unit}</span>}
-      </div>
-      <p className="mt-2 text-xs font-medium text-slate-500">{label}</p>
+      <p className="mt-2 text-xs font-semibold text-slate-500">{label}</p>
     </div>
   );
 }
 
-function EmptyState({ onLoadDemo }: { onLoadDemo: () => void }) {
+function FuelDialog({
+  onClose,
+  onSave,
+}: {
+  onClose: () => void;
+  onSave: (litres: number, price: number) => void;
+}) {
+  const [litres, setLitres] = useState('');
+  const [price, setPrice] = useState('');
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const amount = Number(litres);
+    if (!amount || amount <= 0) return;
+    onSave(amount, Number(price) > 0 ? Number(price) : 0);
+  };
   return (
-    <div className="flex flex-col items-center justify-center rounded-[22px] border border-dashed border-[#cfc7b8] bg-[#f7f3ea] px-6 py-16 text-center">
-      <span className="mb-5 grid h-14 w-14 place-items-center rounded-2xl bg-[#e6edc4] text-[#61752d]"><CarFront size={25} /></span>
-      <h3 className="font-display text-xl font-bold tracking-[-.03em] text-[#222a39]">Your road log is quiet</h3>
-      <p className="mt-2 max-w-sm text-sm leading-6 text-slate-500">Add a ride above to see the useful bits: economy, moving pace, and the time traffic borrowed from you.</p>
-      <button data-testid="button-load-demo-empty" onClick={onLoadDemo} className="mt-6 inline-flex h-10 items-center gap-2 rounded-xl bg-[#222a39] px-4 text-sm font-semibold text-[#faf7ef] transition hover:-translate-y-0.5 hover:bg-[#303b4c]"><Sparkles size={15} /> Load a few demo rides</button>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-[#1c2430]/55 p-4 backdrop-blur-sm">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-[24px] border border-[#e1d9cd] bg-[#faf7ef] p-6 shadow-[0_24px_80px_rgba(31,38,48,.3)]"
+      >
+        <div className="flex items-start justify-between">
+          <div>
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#e6edc4] text-[#61752d]">
+              <Droplets size={19} />
+            </span>
+            <h2 className="mt-4 text-2xl font-bold tracking-[-.06em] text-[#222a39]">
+              Add fuel
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Log what you put in during this ride.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-[#eee7db] hover:text-[#222a39]"
+            aria-label="Close fuel dialog"
+          >
+            <X size={17} />
+          </button>
+        </div>
+        <label className="mt-7 block">
+          <span className="mb-1.5 flex justify-between text-[11px] font-bold uppercase tracking-[.12em] text-slate-500">
+            Fuel added <span className="font-mono normal-case tracking-normal">litres</span>
+          </span>
+          <input
+            autoFocus
+            data-testid="input-live-fuel"
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={litres}
+            onChange={(event) => setLitres(event.target.value)}
+            placeholder="e.g. 12.5"
+            className="h-12 w-full rounded-xl border border-[#d7cec0] bg-[#fffdf8] px-4 font-mono text-base outline-none transition focus:border-[#db6742] focus:ring-4 focus:ring-[#db6742]/10"
+          />
+        </label>
+        <label className="mt-4 block">
+          <span className="mb-1.5 flex justify-between text-[11px] font-bold uppercase tracking-[.12em] text-slate-500">
+            Price <span className="font-mono normal-case tracking-normal">per litre · optional</span>
+          </span>
+          <input
+            data-testid="input-live-fuel-price"
+            type="number"
+            min="0"
+            step="0.01"
+            value={price}
+            onChange={(event) => setPrice(event.target.value)}
+            placeholder="e.g. 1.85"
+            className="h-12 w-full rounded-xl border border-[#d7cec0] bg-[#fffdf8] px-4 font-mono text-base outline-none transition focus:border-[#db6742] focus:ring-4 focus:ring-[#db6742]/10"
+          />
+        </label>
+        <div className="mt-7 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-11 rounded-xl px-4 text-sm font-semibold text-slate-500 transition hover:bg-[#eee7db]"
+          >
+            Cancel
+          </button>
+          <button
+            data-testid="button-save-live-fuel"
+            type="submit"
+            className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#e66d43] px-5 text-sm font-bold text-[#222a39] shadow-[0_4px_0_#bb5232] transition hover:-translate-y-0.5 active:translate-y-0 active:shadow-none"
+          >
+            <Check size={16} /> Add to ride
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
 
-function TrendChart({ rides }: { rides: Ride[] }) {
-  const points = [...rides].sort((a, b) => a.date.localeCompare(b.date)).slice(-7);
-  const max = Math.max(...points.map((ride) => ride.distanceKm), 1);
-  if (!points.length) return <div className="flex h-48 items-center justify-center text-sm text-slate-500">Your distance trend will appear after the first ride.</div>;
+function WaitingTimeline({
+  periods,
+  activeSince,
+}: {
+  periods: WaitingPeriod[];
+  activeSince?: string | null;
+}) {
+  if (!periods.length && !activeSince) {
+    return (
+      <div className="rounded-xl border border-dashed border-[#d6cdbf] bg-[#f7f3ea] px-4 py-5 text-sm text-slate-500">
+        No waiting periods detected yet. The app records a pause when speed stays below 3 km/h.
+      </div>
+    );
+  }
   return (
-    <div className="relative mt-7 h-52">
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-between border-b border-dashed border-[#ddd7cb] pb-2 text-[10px] font-medium text-slate-400"><span>{Math.round(max)} km</span><span>distance per ride</span></div>
-      <div className="absolute inset-x-0 bottom-7 top-8 flex items-end justify-between gap-2">
-        {points.map((ride, index) => {
-          const height = Math.max((ride.distanceKm / max) * 100, 8);
-          const isLast = index === points.length - 1;
-          return (
-            <div key={ride.id} className="group flex h-full flex-1 flex-col items-center justify-end gap-2">
-              <div className="relative w-full max-w-12">
-                <div className={`absolute -top-8 left-1/2 -translate-x-1/2 rounded-md bg-[#222a39] px-1.5 py-1 text-[10px] font-bold text-[#faf7ef] opacity-0 transition group-hover:opacity-100 ${isLast ? 'opacity-100' : ''}`}>{formatNumber(ride.distanceKm)} km</div>
-                <div style={{ height: `${height}%` }} className={`w-full rounded-t-lg transition duration-500 group-hover:brightness-110 ${isLast ? 'bg-[#e66d43]' : 'bg-[#b7c67e]'}`} />
+    <div className="space-y-2">
+      {activeSince && (
+        <div className="flex items-center justify-between rounded-xl bg-[#f8d9d0] px-4 py-3 text-sm text-[#9b4430]">
+          <span className="flex items-center gap-2 font-semibold">
+            <Pause size={15} /> Waiting since {formatClock(activeSince)}
+          </span>
+          <span className="font-mono text-xs">in progress</span>
+        </div>
+      )}
+      {periods.map((period) => (
+        <div
+          key={period.id}
+          className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#f7f3ea] px-4 py-3 text-sm"
+        >
+          <span className="flex items-center gap-2 font-semibold text-[#303746]">
+            <Timer size={15} className="text-[#c85c3a]" />
+            {formatClock(period.startAt)} → {formatClock(period.endAt)}
+          </span>
+          <span className="font-mono text-xs text-slate-500">
+            {formatDuration(period.durationSeconds)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RideSummary({
+  ride,
+  onNewRide,
+}: {
+  ride: Ride;
+  onNewRide: () => void;
+}) {
+  return (
+    <section className="animate-rise rounded-[24px] bg-[#283344] p-5 text-[#f7f3ea] shadow-[0_18px_50px_rgba(40,51,68,.16)] sm:p-7">
+      <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-start">
+        <div>
+          <div className="flex items-center gap-2 text-[#baca88]">
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#baca88]/15">
+              <Check size={17} />
+            </span>
+            <p className="text-[10px] font-bold uppercase tracking-[.18em]">Ride complete</p>
+          </div>
+          <h2 className="mt-4 text-3xl font-bold tracking-[-.07em]">{ride.label}</h2>
+          <p className="mt-1 text-sm text-[#aab4b5]">
+            {formatDateTime(ride.startedAt)} → {formatClock(ride.endedAt)}
+          </p>
+        </div>
+        <button
+          data-testid="button-start-another"
+          onClick={onNewRide}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#e66d43] px-4 text-sm font-bold text-[#222a39] transition hover:-translate-y-0.5 hover:bg-[#ef7950]"
+        >
+          <Play size={15} fill="currentColor" /> Start another
+        </button>
+      </div>
+      <div className="mt-7 grid grid-cols-2 gap-3 border-t border-[#465263] pt-5 sm:grid-cols-4">
+        <div>
+          <p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Distance</p>
+          <p className="mt-1 font-mono text-xl font-bold">{formatNumber(ride.distanceKm)} <span className="text-xs font-normal text-[#89959c]">km</span></p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Average speed</p>
+          <p className="mt-1 font-mono text-xl font-bold">{formatNumber(ride.averageSpeedKmh)} <span className="text-xs font-normal text-[#89959c]">km/h</span></p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Top speed</p>
+          <p className="mt-1 font-mono text-xl font-bold text-[#f6bd80]">{formatNumber(ride.topSpeedKmh, 0)} <span className="text-xs font-normal text-[#89959c]">km/h</span></p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Total time</p>
+          <p className="mt-1 font-mono text-xl font-bold">{formatDuration(ride.durationMinutes * 60)}</p>
+        </div>
+      </div>
+      <div className="mt-6 border-t border-[#465263] pt-5">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[.16em] text-[#f6bd80]">Traffic timeline</p>
+            <p className="mt-1 text-xs text-[#aab4b5]">
+              {ride.waitingPeriods.length
+                ? `${ride.waitingPeriods.length} waiting ${ride.waitingPeriods.length === 1 ? 'period' : 'periods'} detected`
+                : 'No waiting periods detected'}
+            </p>
+          </div>
+          <p className="font-mono text-lg font-bold">{formatDuration(ride.trafficWaitMinutes * 60)}</p>
+        </div>
+        {ride.waitingPeriods.length ? (
+          <div className="space-y-2">
+            {ride.waitingPeriods.map((period) => (
+              <div key={period.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#202a38] px-4 py-3 text-xs">
+                <span className="flex items-center gap-2 text-[#dce1df]"><Timer size={14} className="text-[#f6bd80]" /> {formatClock(period.startAt)} to {formatClock(period.endAt)}</span>
+                <span className="font-mono text-[#aab4b5]">{formatDuration(period.durationSeconds)}</span>
               </div>
-              <span className="max-w-14 truncate text-[10px] text-slate-500">{new Date(`${ride.date}T12:00:00`).toLocaleDateString('en', { weekday: 'short' })}</span>
-            </div>
-          );
-        })}
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-xl bg-[#202a38] px-4 py-3 text-sm text-[#aab4b5]">You kept moving for the whole ride.</p>
+        )}
       </div>
-    </div>
+      <div className="mt-6 grid gap-3 border-t border-[#465263] pt-5 sm:grid-cols-2">
+        <div className="rounded-xl bg-[#202a38] px-4 py-3">
+          <p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Fuel added</p>
+          <p className="mt-1 font-mono text-lg font-bold">{formatNumber(ride.fuelLitres, 2)} <span className="text-xs font-normal text-[#89959c]">litres</span></p>
+        </div>
+        <div className="rounded-xl bg-[#202a38] px-4 py-3">
+          <p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Fuel cost</p>
+          <p className="mt-1 font-mono text-lg font-bold">€{ride.fuelCost.toFixed(2)}</p>
+        </div>
+      </div>
+    </section>
   );
 }
 
-function RideRow({ ride, previous, onEdit, onDelete }: { ride: Ride; previous?: Ride; onEdit: (ride: Ride) => void; onDelete: (ride: Ride) => void }) {
-  const delta = previous ? economy(ride) - economy(previous) : 0;
-  const positive = delta >= 0;
+function HistoryRow({ ride, onDelete }: { ride: Ride; onDelete: (id: string) => void }) {
   return (
-    <div data-testid={`row-ride-${ride.id}`} className="group grid grid-cols-[1fr_auto] gap-3 border-b border-[#e4ded3] py-4 last:border-0 sm:grid-cols-[1.2fr_.85fr_.7fr_.75fr_auto] sm:items-center">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[#e9e4d9] text-[#6e716e]"><MapPin size={14} /></span>
-          <div className="min-w-0"><p className="truncate text-sm font-bold text-[#303746]">{ride.label || 'Untitled ride'}</p><p className="mt-0.5 text-xs text-slate-500">{formatDate(ride.date)}</p></div>
+    <div className="group border-b border-[#e4ded3] py-4 last:border-0">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#e9e4d9] text-[#68716c]">
+            <MapPin size={16} />
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-bold text-[#303746]">{ride.label}</p>
+            <p className="mt-0.5 text-xs text-slate-500">{formatDate(ride.date)} · {formatClock(ride.startedAt)} to {formatClock(ride.endedAt)}</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-4 gap-4 sm:flex sm:items-center sm:gap-7">
+          <div><p className="font-mono text-sm font-bold text-[#303746]">{formatNumber(ride.distanceKm)}</p><p className="text-[10px] text-slate-500">km</p></div>
+          <div><p className="font-mono text-sm font-bold text-[#303746]">{formatNumber(ride.averageSpeedKmh)}</p><p className="text-[10px] text-slate-500">avg km/h</p></div>
+          <div><p className="font-mono text-sm font-bold text-[#303746]">{formatNumber(ride.topSpeedKmh, 0)}</p><p className="text-[10px] text-slate-500">top km/h</p></div>
+          <div><p className="font-mono text-sm font-bold text-[#c85c3a]">{formatDuration(ride.trafficWaitMinutes * 60)}</p><p className="text-[10px] text-slate-500">waiting</p></div>
+          <button
+            data-testid={`button-delete-ride-${ride.id}`}
+            onClick={() => onDelete(ride.id)}
+            aria-label={`Delete ${ride.label}`}
+            className="hidden h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-[#f8d9d0] hover:text-[#b8462f] sm:grid"
+          >
+            <Trash2 size={14} />
+          </button>
         </div>
       </div>
-      <div className="text-right sm:text-left"><p className="font-mono text-sm font-bold text-[#303746]">{formatNumber(ride.distanceKm)} <span className="text-[10px] font-normal text-slate-500">km</span></p><p className="mt-0.5 text-[11px] text-slate-500">{ride.durationMinutes} min total</p></div>
-      <div className="hidden sm:block"><p className="font-mono text-sm font-bold text-[#303746]">{formatNumber(economy(ride))}</p><p className="mt-0.5 text-[11px] text-slate-500">km per litre</p></div>
-      <div className="hidden sm:block"><p className="font-mono text-sm font-bold text-[#303746]">{money(cost(ride))}</p><p className="mt-0.5 text-[11px] text-slate-500">fuel cost</p></div>
-      <div className="col-span-2 flex items-center justify-between gap-3 sm:col-span-1 sm:justify-end">
-        {previous ? <span className={`inline-flex items-center gap-1 text-[11px] font-bold ${positive ? 'text-[#63772f]' : 'text-[#c85538]'}`}>{positive ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}{Math.abs(delta).toFixed(1)} km/L</span> : <span className="text-[11px] text-slate-400">first logged</span>}
-        <div className="flex items-center gap-1 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
-          <button data-testid={`button-edit-ride-${ride.id}`} onClick={() => onEdit(ride)} aria-label={`Edit ${ride.label}`} className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition hover:bg-[#e9e4d9] hover:text-[#222a39]"><Pencil size={14} /></button>
-          <button data-testid={`button-delete-ride-${ride.id}`} onClick={() => onDelete(ride)} aria-label={`Delete ${ride.label}`} className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition hover:bg-[#f8d9d0] hover:text-[#b8462f]"><Trash2 size={14} /></button>
-        </div>
-      </div>
+      <button
+        onClick={() => onDelete(ride.id)}
+        aria-label={`Delete ${ride.label}`}
+        className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-[#b9573b] sm:hidden"
+      >
+        <Trash2 size={13} /> Delete ride
+      </button>
     </div>
   );
 }
 
 function Home() {
   const [rides, setRides] = useState<Ride[]>(readRides);
-  const [form, setForm] = useState<RideForm>(initialForm);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [phase, setPhase] = useState<TrackingPhase>('ready');
+  const [label, setLabel] = useState('');
+  const [live, setLive] = useState<LiveStats>(emptyStats);
+  const [summary, setSummary] = useState<Ride | null>(null);
+  const [showFuelDialog, setShowFuelDialog] = useState(false);
   const [notice, setNotice] = useState('');
+  const [motionPermission, setMotionPermission] = useState<MotionPermission>('unknown');
+  const [gpsState, setGpsState] = useState<'unknown' | 'searching' | 'ready' | 'denied'>('unknown');
+  const [activeWaitSince, setActiveWaitSince] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(Date.now());
+
+  const startAtRef = useRef<string | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+  const intervalRef = useRef<number | null>(null);
+  const motionHandlerRef = useRef<((event: DeviceMotionEvent) => void) | null>(null);
+  const previousPositionRef = useRef<GeolocationPosition | null>(null);
+  const lastSpeedRef = useRef<number | null>(null);
+  const gpsStateRef = useRef<'unknown' | 'searching' | 'ready' | 'denied'>('unknown');
+  const lastMotionAtRef = useRef(0);
+  const motionIsLowRef = useRef(true);
+  const waitStartRef = useRef<string | null>(null);
+  const waitingPeriodsRef = useRef<WaitingPeriod[]>([]);
+  const distanceMetresRef = useRef(0);
+  const topSpeedRef = useRef(0);
+  const fuelEntriesRef = useRef<FuelEntry[]>([]);
+  const liveRef = useRef<LiveStats>(emptyStats);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(rides));
   }, [rides]);
 
   useEffect(() => {
+    liveRef.current = live;
+  }, [live]);
+
+  useEffect(() => {
+    gpsStateRef.current = gpsState;
+  }, [gpsState]);
+
+  useEffect(() => {
+    if (phase !== 'active') return;
+    const ticker = window.setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => window.clearInterval(ticker);
+  }, [phase]);
+
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+      if (intervalRef.current !== null) window.clearInterval(intervalRef.current);
+      if (motionHandlerRef.current) window.removeEventListener('devicemotion', motionHandlerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!notice) return;
-    const timeout = window.setTimeout(() => setNotice(''), 2800);
+    const timeout = window.setTimeout(() => setNotice(''), 3200);
     return () => window.clearTimeout(timeout);
   }, [notice]);
 
-  const ordered = useMemo(() => sortNewest(rides), [rides]);
-  const filtered = useMemo(() => ordered.filter((ride) => `${ride.label} ${ride.notes}`.toLowerCase().includes(query.toLowerCase())), [ordered, query]);
-  const latest = ordered[0];
-  const previous = ordered[1];
-  const totals = useMemo(() => ({
-    distance: rides.reduce((sum, ride) => sum + ride.distanceKm, 0),
-    fuel: rides.reduce((sum, ride) => sum + ride.fuelLitres, 0),
-    cost: rides.reduce((sum, ride) => sum + cost(ride), 0),
-    traffic: rides.reduce((sum, ride) => sum + ride.trafficWaitMinutes, 0),
-  }), [rides]);
-  const averageEconomy = totals.fuel ? totals.distance / totals.fuel : 0;
+  const orderedRides = useMemo(
+    () => [...rides].sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
+    [rides],
+  );
+  const totalDistance = useMemo(
+    () => rides.reduce((sum, ride) => sum + ride.distanceKm, 0),
+    [rides],
+  );
+  const totalWaiting = useMemo(
+    () => rides.reduce((sum, ride) => sum + ride.trafficWaitMinutes, 0),
+    [rides],
+  );
 
-  const updateForm = (key: keyof RideForm, value: string) => {
-    setForm((current) => ({ ...current, [key]: ['distanceKm', 'fuelLitres', 'durationMinutes', 'trafficWaitMinutes', 'averageSpeedKmh', 'topSpeedKmh', 'fuelPricePerLitre'].includes(key) ? Number(value) : value }));
+  const setLiveStats = (next: LiveStats) => {
+    liveRef.current = next;
+    setLive(next);
   };
 
-  const submitRide = (event: FormEvent) => {
-    event.preventDefault();
-    if (!form.label.trim() || form.distanceKm <= 0 || form.durationMinutes <= 0) {
-      setNotice('Add a route, distance, and duration to log this ride.');
+  const cleanupSensors = () => {
+    if (watchIdRef.current !== null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    if (intervalRef.current !== null) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    if (motionHandlerRef.current) {
+      window.removeEventListener('devicemotion', motionHandlerRef.current);
+      motionHandlerRef.current = null;
+    }
+  };
+
+  const closeWaitingPeriod = (endedAt: string) => {
+    const startedAt = waitStartRef.current;
+    if (!startedAt) return;
+    const durationSeconds = Math.max(
+      1,
+      Math.round((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000),
+    );
+    const period: WaitingPeriod = {
+      id: `wait-${Date.now()}`,
+      startAt: startedAt,
+      endAt: endedAt,
+      durationSeconds,
+    };
+    waitingPeriodsRef.current = [...waitingPeriodsRef.current, period];
+    waitStartRef.current = null;
+    setActiveWaitSince(null);
+    setLiveStats({
+      ...liveRef.current,
+      waitingPeriods: waitingPeriodsRef.current,
+      waitingSeconds: sumWaiting(waitingPeriodsRef.current),
+    });
+  };
+
+  const evaluateWaiting = () => {
+    if (!startAtRef.current) return;
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const gpsSpeed = lastSpeedRef.current;
+    const hasRecentMotion = Date.now() - lastMotionAtRef.current < 4000;
+    const isWaiting =
+      gpsSpeed !== null
+        ? gpsSpeed < 3
+        : gpsStateRef.current === 'denied' && hasRecentMotion && motionIsLowRef.current;
+    if (isWaiting && !waitStartRef.current) {
+      waitStartRef.current = nowIso;
+      setActiveWaitSince(nowIso);
+    } else if (!isWaiting && waitStartRef.current) {
+      closeWaitingPeriod(nowIso);
+    }
+    const openWaitSeconds = waitStartRef.current
+      ? Math.max(
+          0,
+          Math.round((now.getTime() - new Date(waitStartRef.current).getTime()) / 1000),
+        )
+      : 0;
+    const elapsedSeconds = Math.max(
+      0,
+      Math.round((now.getTime() - new Date(startAtRef.current).getTime()) / 1000),
+    );
+    const distanceKm = distanceMetresRef.current / 1000;
+    setLiveStats({
+      ...liveRef.current,
+      elapsedSeconds,
+      averageSpeedKmh: elapsedSeconds > 0 ? distanceKm / (elapsedSeconds / 3600) : 0,
+      waitingSeconds: sumWaiting(waitingPeriodsRef.current) + openWaitSeconds,
+    });
+  };
+
+  const enableMotion = async () => {
+    if (!('DeviceMotionEvent' in window)) {
+      setMotionPermission('denied');
       return;
     }
-    const safeRide: Ride = { ...form, label: form.label.trim(), id: editingId ?? `ride-${Date.now()}` };
-    setRides((current) => editingId ? current.map((ride) => ride.id === editingId ? safeRide : ride) : [safeRide, ...current]);
-    setForm(initialForm());
-    setEditingId(null);
-    setNotice(editingId ? 'Ride updated in your log.' : 'Ride saved. Nice drive.');
+    const motionConstructor = window.DeviceMotionEvent as MotionEventConstructor;
+    setMotionPermission('requesting');
+    try {
+      if (motionConstructor.requestPermission) {
+        const permission = await motionConstructor.requestPermission();
+        if (permission !== 'granted') {
+          setMotionPermission('denied');
+          return;
+        }
+      }
+      const handler = (event: DeviceMotionEvent) => {
+        const acceleration = event.acceleration;
+        const x = acceleration?.x ?? null;
+        const y = acceleration?.y ?? null;
+        const z = acceleration?.z ?? null;
+        if (x === null || y === null || z === null) return;
+        const magnitude = Math.sqrt(x * x + y * y + z * z);
+        motionIsLowRef.current = magnitude < 0.25;
+        lastMotionAtRef.current = Date.now();
+      };
+      motionHandlerRef.current = handler;
+      window.addEventListener('devicemotion', handler);
+      setMotionPermission('granted');
+    } catch {
+      setMotionPermission('denied');
+    }
   };
 
-  const editRide = (ride: Ride) => {
-    setEditingId(ride.id);
-    setForm({ date: ride.date, label: ride.label, distanceKm: ride.distanceKm, fuelLitres: ride.fuelLitres, durationMinutes: ride.durationMinutes, trafficWaitMinutes: ride.trafficWaitMinutes, averageSpeedKmh: ride.averageSpeedKmh, topSpeedKmh: ride.topSpeedKmh, fuelPricePerLitre: ride.fuelPricePerLitre, notes: ride.notes });
-    document.getElementById('ride-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const startRide = async () => {
+    const startedAt = new Date().toISOString();
+    startAtRef.current = startedAt;
+    previousPositionRef.current = null;
+    lastSpeedRef.current = null;
+    lastMotionAtRef.current = Date.now();
+    motionIsLowRef.current = true;
+    waitStartRef.current = null;
+    waitingPeriodsRef.current = [];
+    distanceMetresRef.current = 0;
+    topSpeedRef.current = 0;
+    fuelEntriesRef.current = [];
+    setLiveStats(emptyStats);
+    setSummary(null);
+    setPhase('active');
+    setGpsState('searching');
+    setNotice('Ride started. Keep the phone steady and drive safely.');
+
+    await enableMotion();
+
+    if ('geolocation' in navigator) {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (position) => {
+          const previous = previousPositionRef.current;
+          if (previous) {
+            const deltaMetres = haversineMetres(
+              previous.coords.latitude,
+              previous.coords.longitude,
+              position.coords.latitude,
+              position.coords.longitude,
+            );
+            if (deltaMetres < 500) distanceMetresRef.current += Math.max(0, deltaMetres);
+            const elapsed = (position.timestamp - previous.timestamp) / 1000;
+            if (elapsed > 0 && (position.coords.speed === null || !Number.isFinite(position.coords.speed) || position.coords.speed < 0)) {
+              lastSpeedRef.current = Math.max(0, (deltaMetres / elapsed) * 3.6);
+            }
+          }
+          previousPositionRef.current = position;
+          const reportedSpeed = position.coords.speed;
+          if (reportedSpeed !== null && Number.isFinite(reportedSpeed) && reportedSpeed >= 0) {
+            lastSpeedRef.current = reportedSpeed * 3.6;
+          }
+          const speed = Math.max(0, lastSpeedRef.current ?? 0);
+          topSpeedRef.current = Math.max(topSpeedRef.current, speed);
+          setGpsState('ready');
+          setLiveStats({
+            ...liveRef.current,
+            speedKmh: lastSpeedRef.current,
+            topSpeedKmh: topSpeedRef.current,
+            distanceKm: distanceMetresRef.current / 1000,
+          });
+        },
+        () => setGpsState('denied'),
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+      );
+    } else {
+      setGpsState('denied');
+    }
+    intervalRef.current = window.setInterval(evaluateWaiting, 1000);
   };
 
-  const deleteRide = (ride: Ride) => {
-    if (!window.confirm(`Remove “${ride.label || 'Untitled ride'}” from your road log?`)) return;
-    setRides((current) => current.filter((item) => item.id !== ride.id));
-    if (editingId === ride.id) { setEditingId(null); setForm(initialForm()); }
-    setNotice('Ride removed.');
+  const addFuel = (litres: number, pricePerLitre: number) => {
+    const entry: FuelEntry = {
+      id: `fuel-${Date.now()}`,
+      addedAt: new Date().toISOString(),
+      litres,
+      pricePerLitre,
+    };
+    fuelEntriesRef.current = [...fuelEntriesRef.current, entry];
+    const fuelLitres = fuelEntriesRef.current.reduce((sum, item) => sum + item.litres, 0);
+    const fuelCost = fuelEntriesRef.current.reduce(
+      (sum, item) => sum + item.litres * item.pricePerLitre,
+      0,
+    );
+    setLiveStats({ ...liveRef.current, fuelLitres, fuelCost });
+    setShowFuelDialog(false);
+    setNotice(`${formatNumber(litres, 2)} litres added to this ride.`);
   };
 
-  const resetDemo = () => {
-    if (!window.confirm('Reset your road log to the five sample rides?')) return;
-    setRides(seedRides);
-    setNotice('Demo rides restored.');
+  const endRide = () => {
+    if (!startAtRef.current) return;
+    const endedAt = new Date().toISOString();
+    closeWaitingPeriod(endedAt);
+    const finalPeriods = [...waitingPeriodsRef.current];
+    const elapsedSeconds = Math.max(
+      1,
+      Math.round((new Date(endedAt).getTime() - new Date(startAtRef.current).getTime()) / 1000),
+    );
+    const distanceKm = distanceMetresRef.current / 1000;
+    const fuelLitres = fuelEntriesRef.current.reduce((sum, item) => sum + item.litres, 0);
+    const fuelCost = fuelEntriesRef.current.reduce(
+      (sum, item) => sum + item.litres * item.pricePerLitre,
+      0,
+    );
+    const completedRide: Ride = {
+      id: `ride-${Date.now()}`,
+      label: label.trim() || `Ride · ${formatDate(todayString())}`,
+      date: todayString(),
+      startedAt: startAtRef.current,
+      endedAt,
+      distanceKm,
+      fuelLitres,
+      fuelCost,
+      durationMinutes: elapsedSeconds / 60,
+      trafficWaitMinutes: sumWaiting(finalPeriods) / 60,
+      averageSpeedKmh: distanceKm / (elapsedSeconds / 3600),
+      topSpeedKmh: topSpeedRef.current,
+      waitingPeriods: finalPeriods,
+      fuelEntries: [...fuelEntriesRef.current],
+    };
+    cleanupSensors();
+    setLiveStats({
+      ...liveRef.current,
+      elapsedSeconds,
+      distanceKm,
+      averageSpeedKmh: completedRide.averageSpeedKmh,
+      topSpeedKmh: completedRide.topSpeedKmh,
+      waitingPeriods: finalPeriods,
+      waitingSeconds: sumWaiting(finalPeriods),
+      fuelLitres,
+      fuelCost,
+    });
+    setRides((current) => [completedRide, ...current]);
+    setSummary(completedRide);
+    setPhase('summary');
+    setActiveWaitSince(null);
+    startAtRef.current = null;
+    setNotice('Ride ended. Your summary is ready.');
   };
 
-  const clearForm = () => { setForm(initialForm()); setEditingId(null); setNotice('Form cleared.'); };
+  const resetForNewRide = () => {
+    cleanupSensors();
+    startAtRef.current = null;
+    setPhase('ready');
+    setSummary(null);
+    setLabel('');
+    setLiveStats(emptyStats);
+    setMotionPermission('unknown');
+    setGpsState('unknown');
+    setActiveWaitSince(null);
+  };
+
+  const deleteRide = (id: string) => {
+    const ride = rides.find((item) => item.id === id);
+    if (!ride || !window.confirm(`Delete “${ride.label}” from your ride history?`)) return;
+    setRides((current) => current.filter((item) => item.id !== id));
+    setNotice('Ride deleted.');
+  };
+
+  const clearAll = () => {
+    if (!rides.length || !window.confirm('Delete every saved ride from this browser?')) return;
+    setRides([]);
+    setNotice('Ride history cleared.');
+  };
+
+  const liveWaitingSeconds = live.waitingSeconds;
+  const displayedElapsed = phase === 'active' && startAtRef.current
+    ? Math.max(0, Math.round((currentTime - new Date(startAtRef.current).getTime()) / 1000))
+    : live.elapsedSeconds;
 
   return (
     <div className="noise min-h-[100dvh] bg-[#f1ede4] text-[#222a39]">
       <div className="mx-auto flex min-h-[100dvh] max-w-[1600px]">
         <aside className="instrument-grid hidden w-[238px] shrink-0 flex-col bg-[#222a39] px-5 py-6 text-[#f7f3ea] lg:flex">
           <div className="flex items-center gap-3 px-2">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#e66d43] text-[#222a39]"><Gauge size={21} strokeWidth={2.5} /></span>
-            <div><p className="text-sm font-bold tracking-[-.02em]">Ride Analyzer</p><p className="mt-0.5 text-[10px] uppercase tracking-[.16em] text-[#abb5b9]">private road log</p></div>
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#e66d43] text-[#222a39]">
+              <Gauge size={21} strokeWidth={2.5} />
+            </span>
+            <div>
+              <p className="text-sm font-bold tracking-[-.02em]">Ride Analyzer</p>
+              <p className="mt-0.5 text-[10px] uppercase tracking-[.16em] text-[#abb5b9]">live road recorder</p>
+            </div>
           </div>
           <div className="mt-14">
             <p className="px-2 text-[10px] font-bold uppercase tracking-[.18em] text-[#8e9aa1]">Your instrument</p>
-            <div className="mt-3 rounded-xl bg-[#313c4d] px-3 py-3.5 text-sm font-semibold text-[#f7f3ea]"><span className="mr-2 text-[#e66d43]">●</span> Overview <ChevronRight className="float-right mt-0.5 text-[#8e9aa1]" size={15} /></div>
+            <div className="mt-3 rounded-xl bg-[#313c4d] px-3 py-3.5 text-sm font-semibold text-[#f7f3ea]">
+              <span className="mr-2 text-[#e66d43]">●</span> Live ride
+              <ChevronRight className="float-right mt-0.5 text-[#8e9aa1]" size={15} />
+            </div>
           </div>
           <div className="mt-auto rounded-2xl border border-[#3d4856] bg-[#2c3748] p-4">
-            <div className="flex items-center gap-2 text-[#bdcb88]"><CircleDot size={15} className="pulse-dot" /><span className="text-xs font-bold">Local only</span></div>
-            <p className="mt-2 text-[11px] leading-5 text-[#9da8ae]">Your rides stay in this browser. No account, no cloud, no noise.</p>
+            <div className="flex items-center gap-2 text-[#bdcb88]">
+              <CircleDot size={15} className="pulse-dot" />
+              <span className="text-xs font-bold">Phone sensors</span>
+            </div>
+            <p className="mt-2 text-[11px] leading-5 text-[#9da8ae]">
+              Motion detects pauses. GPS supplies the most accurate speed and distance when available.
+            </p>
           </div>
-          <p className="mt-5 px-2 text-[10px] text-[#697782]">v1.0 · made for the drive home</p>
+          <p className="mt-5 px-2 text-[10px] text-[#697782]">v2.0 · made for the drive</p>
         </aside>
 
         <main className="min-w-0 flex-1">
           <header className="flex items-center justify-between border-b border-[#ded8cc] bg-[#f1ede4]/90 px-5 py-4 backdrop-blur-md sm:px-8 lg:px-12">
-            <div className="flex items-center gap-3 lg:hidden"><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#e66d43] text-[#222a39]"><Gauge size={18} /></span><span className="text-sm font-bold">Ride Analyzer</span></div>
-            <div className="hidden items-center gap-2 text-xs text-slate-500 lg:flex"><span className="h-2 w-2 rounded-full bg-[#9fb46c]" /> All systems ready <span className="mx-1 text-[#c5bcad]">/</span> Dashboard</div>
-            <div className="ml-auto flex items-center gap-3"><span className="hidden text-xs text-slate-500 sm:inline">Data lives on this device</span><button data-testid="button-reset-demo" onClick={resetDemo} className="inline-flex h-9 items-center gap-2 rounded-lg border border-[#d8d0c3] bg-[#f7f3ea] px-3 text-xs font-bold text-[#59616b] transition hover:border-[#bfb5a6] hover:text-[#222a39]"><RotateCcw size={13} /> Reset demo</button></div>
+            <div className="flex items-center gap-3 lg:hidden">
+              <span className="grid h-9 w-9 place-items-center rounded-xl bg-[#e66d43] text-[#222a39]">
+                <Gauge size={18} />
+              </span>
+              <span className="text-sm font-bold">Ride Analyzer</span>
+            </div>
+            <div className="hidden items-center gap-2 text-xs text-slate-500 lg:flex">
+              <span className={`h-2 w-2 rounded-full ${phase === 'active' ? 'bg-[#e66d43] animate-pulse' : 'bg-[#9fb46c]'}`} />
+              {phase === 'active' ? 'Recording live ride' : 'Ready to record'} <span className="mx-1 text-[#c5bcad]">/</span> Dashboard
+            </div>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="hidden text-xs text-slate-500 sm:inline">Data lives on this device</span>
+              <button
+                data-testid="button-clear-history-header"
+                onClick={clearAll}
+                className="inline-flex h-9 items-center gap-2 rounded-lg border border-[#d8d0c3] bg-[#f7f3ea] px-3 text-xs font-bold text-[#59616b] transition hover:border-[#bfb5a6] hover:text-[#222a39]"
+              >
+                <History size={13} /> History
+              </button>
+            </div>
           </header>
 
           <div className="px-5 pb-14 pt-7 sm:px-8 lg:px-12 lg:pt-10">
             <section className="animate-rise flex flex-col justify-between gap-6 border-b border-[#ddd6c9] pb-8 sm:flex-row sm:items-end">
-              <div><p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.18em] text-[#db6742]"><span className="h-1.5 w-1.5 rounded-full bg-[#db6742]" /> After the drive</p><h1 className="max-w-2xl text-[clamp(2.1rem,5vw,4.4rem)] font-bold leading-[.94] tracking-[-.075em] text-[#222a39]">Make every<br /><span className="text-[#db6742]">kilometre count.</span></h1><p className="mt-5 max-w-lg text-sm leading-6 text-slate-500">A private, low-friction way to turn ordinary journeys into a better feel for your car.</p></div>
-              <div className="w-full max-w-[270px] rounded-2xl bg-[#e5ecc5] p-4 text-[#4e6127] sm:mb-1"><div className="flex items-start justify-between"><span className="text-[10px] font-bold uppercase tracking-[.16em]">Your road so far</span><TrendingUp size={17} /></div><p className="mt-4 font-mono text-3xl font-bold tracking-[-.08em]">{formatNumber(totals.distance)} <span className="text-sm font-normal tracking-normal">km</span></p><p className="mt-1 text-xs text-[#6e7d43]">{rides.length ? `${rides.length} ${rides.length === 1 ? 'ride' : 'rides'} logged` : 'No rides logged yet'}</p></div>
-            </section>
-
-            <section className="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,.85fr)]">
-              <form id="ride-form" onSubmit={submitRide} className="animate-rise stagger-1 rounded-[22px] border border-[#ded7ca] bg-[#faf7ef] p-5 shadow-[0_14px_40px_rgba(44,42,34,.05)] sm:p-6">
-                <div className="mb-5 flex items-start justify-between"><div><div className="flex items-center gap-2"><span className="grid h-8 w-8 place-items-center rounded-lg bg-[#f8d9cc] text-[#cc5b38]"><Plus size={17} /></span><h2 className="text-lg font-bold tracking-[-.04em]">{editingId ? 'Edit this ride' : 'Log a ride'}</h2></div><p className="mt-1.5 pl-10 text-xs text-slate-500">{editingId ? 'Tweak the details and save your update.' : 'The good stuff starts with the basics.'}</p></div>{editingId && <button data-testid="button-cancel-edit" type="button" onClick={clearForm} className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-[#eee7db] hover:text-[#222a39]"><X size={16} /></button>}</div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Route or label" wide><Input data-testid="input-route" value={form.label} onChange={(event) => updateForm('label', event.target.value)} placeholder="e.g. Home → studio" /></Field>
-                  <Field label="Date"><div className="relative"><CalendarDays size={15} className="pointer-events-none absolute left-3.5 top-3.5 text-slate-400" /><Input data-testid="input-date" type="date" className="pl-10" value={form.date} onChange={(event) => updateForm('date', event.target.value)} /></div></Field>
-                  <Field label="Distance" suffix="km"><Input data-testid="input-distance" type="number" min="0" step="0.1" value={form.distanceKm || ''} onChange={(event) => updateForm('distanceKm', event.target.value)} placeholder="0.0" /></Field>
-                  <Field label="Fuel used" suffix="litres"><Input data-testid="input-fuel" type="number" min="0" step="0.01" value={form.fuelLitres || ''} onChange={(event) => updateForm('fuelLitres', event.target.value)} placeholder="0.00" /></Field>
-                  <Field label="Total duration" suffix="minutes"><Input data-testid="input-duration" type="number" min="0" step="1" value={form.durationMinutes || ''} onChange={(event) => updateForm('durationMinutes', event.target.value)} placeholder="0" /></Field>
-                  <Field label="Traffic wait" suffix="minutes"><Input data-testid="input-traffic" type="number" min="0" step="1" value={form.trafficWaitMinutes || ''} onChange={(event) => updateForm('trafficWaitMinutes', event.target.value)} placeholder="0" /></Field>
+              <div>
+                <p className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[.18em] text-[#db6742]">
+                  <span className={`h-1.5 w-1.5 rounded-full ${phase === 'active' ? 'animate-pulse bg-[#db6742]' : 'bg-[#db6742]'}`} />
+                  {phase === 'active' ? 'Ride in progress' : phase === 'summary' ? 'After the drive' : 'Before the drive'}
+                </p>
+                <h1 className="max-w-2xl text-[clamp(2.1rem,5vw,4.4rem)] font-bold leading-[.94] tracking-[-.075em] text-[#222a39]">
+                  {phase === 'active' ? <>Keep your eyes<br /><span className="text-[#db6742]">on the road.</span></> : phase === 'summary' ? <>Every drive<br /><span className="text-[#db6742]">tells a story.</span></> : <>Ready when<br /><span className="text-[#db6742]">you are.</span></>}
+                </h1>
+                <p className="mt-5 max-w-lg text-sm leading-6 text-slate-500">
+                  {phase === 'active'
+                    ? 'Your phone is quietly reading motion, speed, distance, and the moments traffic asks you to wait.'
+                    : 'Start a ride once, let your phone do the recording, and get the full timeline when you arrive.'}
+                </p>
+              </div>
+              <div className="w-full max-w-[270px] rounded-2xl bg-[#e5ecc5] p-4 text-[#4e6127] sm:mb-1">
+                <div className="flex items-start justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-[.16em]">Road recorded</span>
+                  <TrendingUp size={17} />
                 </div>
-                <button data-testid="button-toggle-advanced" type="button" onClick={() => setShowAdvanced((current) => !current)} className="mt-5 flex items-center gap-2 text-xs font-bold text-[#6c756f] transition hover:text-[#db6742]"><SlidersHorizontal size={14} /> {showAdvanced ? 'Hide extra details' : 'Add speed, price & notes'}<ChevronRight size={13} className={`transition ${showAdvanced ? 'rotate-90' : ''}`} /></button>
-                {showAdvanced && <div className="mt-4 grid animate-rise gap-4 border-t border-[#e6dfd4] pt-4 sm:grid-cols-3"><Field label="Average speed" suffix="km/h"><Input data-testid="input-average-speed" type="number" min="0" step="0.1" value={form.averageSpeedKmh || ''} onChange={(event) => updateForm('averageSpeedKmh', event.target.value)} placeholder="optional" /></Field><Field label="Top speed" suffix="km/h"><Input data-testid="input-top-speed" type="number" min="0" step="1" value={form.topSpeedKmh || ''} onChange={(event) => updateForm('topSpeedKmh', event.target.value)} placeholder="optional" /></Field><Field label="Fuel price" suffix="per litre"><Input data-testid="input-fuel-price" type="number" min="0" step="0.01" value={form.fuelPricePerLitre || ''} onChange={(event) => updateForm('fuelPricePerLitre', event.target.value)} /></Field><Field label="Notes" wide><textarea data-testid="input-notes" value={form.notes} onChange={(event) => updateForm('notes', event.target.value)} placeholder="Anything worth remembering?" className="min-h-[76px] w-full resize-y rounded-xl border border-[hsl(var(--input))] bg-[hsl(var(--card))] px-3.5 py-3 text-sm text-[hsl(var(--foreground))] outline-none transition placeholder:text-slate-400 focus:border-[hsl(var(--primary))] focus:ring-4 focus:ring-[hsl(var(--primary)/.14)]" /></Field></div>}
-                <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button data-testid="button-clear-form" type="button" onClick={clearForm} className="h-11 rounded-xl px-4 text-sm font-semibold text-slate-500 transition hover:bg-[#eee7db] hover:text-[#222a39]">Clear</button><button data-testid="button-save-ride" type="submit" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#e66d43] px-5 text-sm font-bold text-[#222a39] shadow-[0_5px_0_#bb5232] transition hover:-translate-y-0.5 hover:bg-[#ee7950] active:translate-y-0 active:shadow-none"><Check size={16} strokeWidth={2.5} /> {editingId ? 'Save changes' : 'Save ride'}</button></div>
-              </form>
-
-              <div className="animate-rise stagger-2 instrument-grid relative overflow-hidden rounded-[22px] bg-[#283344] p-5 text-[#f7f3ea] sm:p-6">
-                <div className="absolute -right-16 -top-16 h-44 w-44 rounded-full border-[20px] border-[#3c485a] opacity-50" /><div className="absolute -right-7 -top-7 h-26 w-26 rounded-full border border-[#526074] opacity-60" />
-                <div className="relative"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#aab4b5]">Live readout</p><h2 className="mt-2 text-xl font-bold tracking-[-.04em]">Last ride, decoded</h2></div><span className="rounded-full border border-[#526073] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.12em] text-[#baca88]">{latest ? 'recent signal' : 'waiting'}</span></div>
-                  {latest ? <><div className="mt-8 flex items-end gap-3"><span className="font-mono text-[clamp(3rem,6vw,4.5rem)] font-bold leading-none tracking-[-.1em] text-[#f6bd80]">{formatNumber(economy(latest))}</span><span className="pb-1.5 text-sm text-[#b6bec1]">km/L<br /><span className="text-xs text-[#89959c]">fuel economy</span></span></div><div className="mt-8 grid grid-cols-2 gap-3 border-t border-[#465263] pt-4"><div><p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Moving pace</p><p className="mt-1 font-mono text-lg font-bold">{formatNumber(movingSpeed(latest))} <span className="text-xs font-normal text-[#89959c]">km/h</span></p></div><div><p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Traffic tax</p><p className="mt-1 font-mono text-lg font-bold">{Math.round(trafficPercent(latest))}<span className="text-xs font-normal text-[#89959c]">%</span></p></div></div><p className="mt-6 flex items-center gap-2 text-xs text-[#aab4b5]"><Info size={13} /> {latest.label} · {formatDate(latest.date)}</p></> : <div className="flex h-[275px] flex-col items-center justify-center text-center"><Gauge size={32} className="mb-3 text-[#748091]" /><p className="text-sm font-semibold text-[#dce1df]">Your next ride will light this up.</p><p className="mt-1 max-w-[220px] text-xs leading-5 text-[#89959c]">Log the basics and we’ll calculate the useful bits.</p></div>}
-                </div>
+                <p className="mt-4 font-mono text-3xl font-bold tracking-[-.08em]">{formatNumber(totalDistance)} <span className="text-sm font-normal tracking-normal">km</span></p>
+                <p className="mt-1 text-xs text-[#6e7d43]">{rides.length ? `${rides.length} ${rides.length === 1 ? 'ride' : 'rides'} saved` : 'No rides saved yet'}</p>
               </div>
             </section>
 
-            <section className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="animate-rise stagger-2"><StatTile icon={RouteIcon} label="Total distance" value={formatNumber(totals.distance)} unit="km" detail={`${rides.length} rides`} accent="orange" /></div>
-              <div className="animate-rise stagger-3"><StatTile icon={Fuel} label="Average economy" value={formatNumber(averageEconomy)} unit="km/L" detail="all logged rides" accent="lime" /></div>
-              <div className="animate-rise stagger-4"><StatTile icon={Clock3} label="Traffic wait" value={formatNumber(totals.traffic, 0)} unit="min" detail="time parked" accent="blue" /></div>
-              <div className="animate-rise stagger-5"><StatTile icon={Database} label="Fuel spend" value={money(totals.cost)} detail={`${formatNumber(totals.fuel, 1)} litres`} accent="ink" /></div>
+            {phase === 'ready' && (
+              <section className="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,.9fr)]">
+                <div className="animate-rise rounded-[24px] border border-[#ded7ca] bg-[#faf7ef] p-5 shadow-[0_14px_40px_rgba(44,42,34,.05)] sm:p-7">
+                  <div className="flex items-start gap-3">
+                    <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#f8d9cc] text-[#cc5b38]"><Navigation size={19} /></span>
+                    <div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-[#db6742]">New recording</p><h2 className="mt-1 text-2xl font-bold tracking-[-.06em]">Start a ride</h2></div>
+                  </div>
+                  <p className="mt-5 max-w-md text-sm leading-6 text-slate-500">Tap start before you pull away. We’ll ask for phone sensor access and keep the live recorder running until you end the ride.</p>
+                  <label className="mt-6 block max-w-md">
+                    <span className="mb-1.5 flex justify-between text-[11px] font-bold uppercase tracking-[.12em] text-slate-500"><span>Ride name</span><span className="font-normal normal-case tracking-normal text-slate-400">optional</span></span>
+                    <input data-testid="input-ride-name" value={label} onChange={(event) => setLabel(event.target.value)} placeholder="e.g. Home to work" className="h-12 w-full rounded-xl border border-[#d7cec0] bg-[#fffdf8] px-4 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#db6742] focus:ring-4 focus:ring-[#db6742]/10" />
+                  </label>
+                  <button data-testid="button-start-ride" onClick={startRide} className="mt-6 inline-flex h-13 w-full items-center justify-center gap-2 rounded-xl bg-[#e66d43] px-5 py-3.5 text-sm font-bold text-[#222a39] shadow-[0_5px_0_#bb5232] transition hover:-translate-y-0.5 hover:bg-[#ee7950] active:translate-y-0 active:shadow-none sm:w-auto sm:min-w-[190px]">
+                    <Play size={17} fill="currentColor" /> Start ride
+                  </button>
+                  <p className="mt-4 flex items-center gap-2 text-xs text-slate-400"><Smartphone size={14} /> Works best with your phone mounted securely.</p>
+                </div>
+                <div className="animate-rise stagger-1 instrument-grid relative overflow-hidden rounded-[24px] bg-[#283344] p-5 text-[#f7f3ea] sm:p-7">
+                  <div className="absolute -right-16 -top-16 h-44 w-44 rounded-full border-[20px] border-[#3c485a] opacity-50" />
+                  <div className="relative">
+                    <p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#aab4b5]">How it works</p>
+                    <div className="mt-6 space-y-5">
+                      {[
+                        ['01', 'Start ride', 'Allow motion and location when your phone asks.'],
+                        ['02', 'Keep driving', 'Live speed, top speed, distance, and pauses update as you go.'],
+                        ['03', 'End ride', 'Get the exact waiting timeline and a saved ride summary.'],
+                      ].map(([number, title, copy]) => (
+                        <div key={number} className="flex gap-3">
+                          <span className="font-mono text-xs text-[#f6bd80]">{number}</span>
+                          <div><p className="text-sm font-bold">{title}</p><p className="mt-1 text-xs leading-5 text-[#9da8ae]">{copy}</p></div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {phase === 'active' && (
+              <section className="mt-8 animate-rise">
+                <div className="instrument-grid overflow-hidden rounded-[24px] bg-[#283344] p-5 text-[#f7f3ea] shadow-[0_18px_50px_rgba(40,51,68,.16)] sm:p-7">
+                  <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-start">
+                    <div>
+                      <div className="flex items-center gap-2 text-[#f6bd80]"><span className="h-2 w-2 animate-pulse rounded-full bg-[#e66d43]" /><p className="text-[10px] font-bold uppercase tracking-[.18em]">Recording now</p></div>
+                      <h2 className="mt-3 text-2xl font-bold tracking-[-.06em]">{label.trim() || 'Untitled ride'}</h2>
+                      <p className="mt-1 text-sm text-[#aab4b5]">Started {startAtRef.current ? formatClock(startAtRef.current) : 'now'}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <SensorPill icon={Activity} label={motionPermission === 'granted' ? 'Motion on' : motionPermission === 'denied' ? 'Motion off' : 'Motion…'} active={motionPermission === 'granted'} />
+                      <SensorPill icon={LocateFixed} label={gpsState === 'ready' ? 'GPS speed on' : gpsState === 'denied' ? 'GPS unavailable' : 'GPS…'} active={gpsState === 'ready'} />
+                    </div>
+                  </div>
+                  <div className="mt-8 grid gap-5 lg:grid-cols-[1.05fr_1fr]">
+                    <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-5 sm:p-7">
+                      <p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#89959c]">Current speed</p>
+                      <div className="mt-4 flex items-end gap-3">
+                        <strong data-testid="live-current-speed" className="font-mono text-[clamp(4rem,10vw,7rem)] leading-[.8] tracking-[-.12em] text-[#f6bd80]">{live.speedKmh === null ? '—' : formatNumber(live.speedKmh, 0)}</strong>
+                        <span className="pb-1 text-sm text-[#aab4b5]">km/h<br /><span className="text-xs text-[#89959c]">live reading</span></span>
+                      </div>
+                      {motionPermission === 'denied' || gpsState === 'denied' ? <p className="mt-7 flex items-start gap-2 text-xs leading-5 text-[#f6bd80]"><Info size={14} className="mt-0.5 shrink-0" />{gpsState === 'denied' ? 'Location access is off. Speed and distance need GPS; motion can still identify movement pauses on supported phones.' : 'Motion access is off. Speed can still use GPS when available.'}</p> : <p className="mt-7 flex items-center gap-2 text-xs text-[#aab4b5]"><Zap size={14} className="text-[#baca88]" /> The recorder is running in the background of this screen.</p>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-4"><p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Average speed</p><p data-testid="live-average-speed" className="mt-3 font-mono text-2xl font-bold">{formatNumber(live.averageSpeedKmh)} <span className="text-xs font-normal text-[#89959c]">km/h</span></p></div>
+                      <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-4"><p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Top speed</p><p data-testid="live-top-speed" className="mt-3 font-mono text-2xl font-bold text-[#f6bd80]">{formatNumber(live.topSpeedKmh, 0)} <span className="text-xs font-normal text-[#89959c]">km/h</span></p></div>
+                      <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-4"><p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Elapsed</p><p className="mt-3 font-mono text-2xl font-bold">{formatDuration(displayedElapsed)}</p></div>
+                      <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-4"><p className="text-[10px] uppercase tracking-[.14em] text-[#89959c]">Distance</p><p className="mt-3 font-mono text-2xl font-bold">{formatNumber(live.distanceKm)} <span className="text-xs font-normal text-[#89959c]">km</span></p></div>
+                    </div>
+                  </div>
+                  <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_1fr]">
+                    <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-5">
+                      <div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-[#f6bd80]">Traffic watch</p><p className="mt-1 text-xs text-[#aab4b5]">{activeWaitSince ? `Waiting since ${formatClock(activeWaitSince)}` : 'Pauses appear here automatically'}</p></div><p data-testid="live-wait-time" className="font-mono text-lg font-bold">{formatDuration(liveWaitingSeconds)}</p></div>
+                      <WaitingTimeline periods={live.waitingPeriods} activeSince={activeWaitSince} />
+                    </div>
+                    <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-5">
+                      <div className="flex items-start justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-[#baca88]">Fuel during ride</p><p className="mt-2 font-mono text-3xl font-bold">{formatNumber(live.fuelLitres, 2)} <span className="text-xs font-normal text-[#89959c]">litres</span></p></div><Droplets size={20} className="text-[#baca88]" /></div>
+                      <button data-testid="button-add-fuel" onClick={() => setShowFuelDialog(true)} className="mt-7 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-[#baca88]/40 bg-[#baca88]/10 text-sm font-bold text-[#d0dc9d] transition hover:bg-[#baca88]/20"><Plus size={16} /> Add fuel</button>
+                    </div>
+                  </div>
+                  <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="flex items-center gap-2 text-xs text-[#89959c]"><Info size={14} /> Please stop the recording when you arrive.</p>
+                    <button data-testid="button-end-ride" onClick={endRide} className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[#e66d43] px-6 text-sm font-bold text-[#222a39] shadow-[0_4px_0_#bb5232] transition hover:-translate-y-0.5 hover:bg-[#ee7950] active:translate-y-0 active:shadow-none"><SquareIcon /> End ride</button>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {phase === 'summary' && summary && (
+              <div className="mt-8">
+                <RideSummary ride={summary} onNewRide={resetForNewRide} />
+              </div>
+            )}
+
+            <section className="mt-5 grid gap-4 sm:grid-cols-3">
+              <Metric icon={RouteIcon} label="Total distance" value={formatNumber(totalDistance)} unit="km" accent="orange" />
+              <Metric icon={Clock3} label="Total time waiting" value={formatDuration(totalWaiting * 60)} accent="blue" />
+              <Metric icon={Smartphone} label="Rides recorded" value={String(rides.length)} accent="lime" />
             </section>
 
-            <section className="mt-8 grid gap-5 xl:grid-cols-[1.3fr_.7fr]">
-              <div className="animate-rise rounded-[22px] border border-[#ded7ca] bg-[#faf7ef] p-5 sm:p-6"><div className="flex items-start justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#db6742]">Pattern finder</p><h2 className="mt-2 text-xl font-bold tracking-[-.05em]">Distance, at a glance</h2><p className="mt-1 text-xs text-slate-500">Your last seven rides, oldest to newest.</p></div><span className="grid h-9 w-9 place-items-center rounded-xl bg-[#e9e4d9] text-[#68716c]"><TrendingUp size={17} /></span></div><TrendChart rides={rides} /></div>
-              <div className="animate-rise stagger-1 rounded-[22px] bg-[#e7d6c5] p-5 sm:p-6"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#9b5e44]">A small insight</p><h2 className="mt-3 max-w-xs text-2xl font-bold leading-[1.03] tracking-[-.06em] text-[#46352f]">{latest ? latest.trafficWaitMinutes <= 5 ? 'That was a clean run.' : 'Traffic had a say today.' : 'The road is yours to read.'}</h2><p className="mt-4 text-sm leading-6 text-[#72584c]">{latest ? `On ${latest.label || 'your last ride'}, ${latest.trafficWaitMinutes} minutes were spent waiting. Your moving pace was ${formatNumber(movingSpeed(latest))} km/h.` : 'Save a ride and Ride Analyzer will surface the little patterns worth noticing.'}</p><div className="mt-7 flex items-center gap-2 text-xs font-bold text-[#9b5e44]"><Timer size={15} /> {latest ? `${Math.round(trafficPercent(latest))}% of the ride was waiting` : 'Ready when you are'}</div></div>
+            <section id="history" className="mt-8 animate-rise rounded-[22px] border border-[#ded7ca] bg-[#faf7ef] p-5 sm:p-6">
+              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+                <div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#db6742]">Ride history</p><h2 className="mt-2 text-xl font-bold tracking-[-.05em]">Your recorded drives</h2><p className="mt-1 text-xs text-slate-500">Every ride keeps its start, end, speed, and waiting timeline.</p></div>
+                {rides.length > 0 && <button data-testid="button-clear-all-rides" onClick={clearAll} className="inline-flex items-center gap-1.5 self-start text-xs font-bold text-[#b9573b] transition hover:text-[#8f3c27]"><Trash2 size={13} /> Clear history</button>}
+              </div>
+              {orderedRides.length ? <div className="mt-5">{orderedRides.map((ride) => <HistoryRow key={ride.id} ride={ride} onDelete={deleteRide} />)}</div> : <div className="mt-5 flex flex-col items-center justify-center rounded-2xl border border-dashed border-[#cfc7b8] bg-[#f7f3ea] px-6 py-12 text-center"><span className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-[#e6edc4] text-[#61752d]"><CarFront size={23} /></span><h3 className="font-bold text-[#222a39]">Your first drive is waiting</h3><p className="mt-2 max-w-sm text-sm leading-6 text-slate-500">Start a ride above. When you end it, the full speed and traffic timeline will appear here.</p></div>}
             </section>
 
-            <section className="mt-8 animate-rise rounded-[22px] border border-[#ded7ca] bg-[#faf7ef] p-5 sm:p-6">
-              <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#db6742]">Road log</p><h2 className="mt-2 text-xl font-bold tracking-[-.05em]">Recent rides</h2><p className="mt-1 text-xs text-slate-500">A quiet record of where the kilometres went.</p></div><div className="relative w-full sm:w-56"><Search size={15} className="pointer-events-none absolute left-3 top-3 text-slate-400" /><input data-testid="input-search-rides" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search your log" className="h-10 w-full rounded-xl border border-[#dcd4c8] bg-[#f4f0e7] pl-9 pr-3 text-xs outline-none transition placeholder:text-slate-400 focus:border-[#db6742] focus:ring-4 focus:ring-[#db6742]/10" /></div></div>
-              {rides.length ? <>{filtered.length ? <div className="mt-5"><div className="mb-1 hidden grid-cols-[1.2fr_.85fr_.7fr_.75fr_auto] gap-3 border-b border-[#e4ded3] pb-2 text-[10px] font-bold uppercase tracking-[.14em] text-slate-400 sm:grid"><span>Ride</span><span>Distance</span><span>Economy</span><span>Cost</span><span /></div>{filtered.map((ride, index) => <RideRow key={ride.id} ride={ride} previous={ordered[index + 1]} onEdit={editRide} onDelete={deleteRide} />)}</div> : <div className="mt-6 rounded-xl bg-[#f1ede4] px-4 py-8 text-center text-sm text-slate-500">No rides match “{query}”. <button data-testid="button-clear-search" onClick={() => setQuery('')} className="font-bold text-[#c85c3a] hover:underline">Clear search</button></div>}</> : <div className="mt-5"><EmptyState onLoadDemo={() => { setRides(seedRides); setNotice('Demo rides loaded.'); }} /></div>}
-              {rides.length > 0 && <div className="mt-5 flex flex-col justify-between gap-3 border-t border-[#e4ded3] pt-4 text-xs text-slate-500 sm:flex-row sm:items-center"><span>{filtered.length} of {rides.length} {rides.length === 1 ? 'ride' : 'rides'} shown</span><button data-testid="button-clear-all-rides" onClick={() => { if (window.confirm('Delete every ride from this browser?')) { setRides([]); setNotice('Road log cleared.'); } }} className="inline-flex items-center gap-1.5 font-bold text-[#b9573b] transition hover:text-[#8f3c27]"><Trash2 size={13} /> Clear all rides</button></div>}
-            </section>
-            <footer className="flex flex-col gap-2 px-1 pb-2 pt-8 text-[11px] text-slate-400 sm:flex-row sm:items-center sm:justify-between"><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#9fb46c]" /> Stored locally in your browser</span><span>Ride Analyzer · for the curious driver</span></footer>
+            <footer className="flex flex-col gap-2 px-1 pb-2 pt-8 text-[11px] text-slate-400 sm:flex-row sm:items-center sm:justify-between"><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#9fb46c]" /> Stored locally in your browser</span><span>Ride Analyzer · keep moving safely</span></footer>
           </div>
         </main>
       </div>
+      {showFuelDialog && <FuelDialog onClose={() => setShowFuelDialog(false)} onSave={addFuel} />}
       {notice && <div data-testid="status-notice" className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-xl bg-[#222a39] px-4 py-3 text-sm font-semibold text-[#f7f3ea] shadow-[0_10px_30px_rgba(34,42,57,.25)] animate-rise"><Check size={16} className="text-[#bdcb88]" />{notice}</div>}
     </div>
   );
+}
+
+function SquareIcon() {
+  return <span className="grid h-3 w-3 place-items-center rounded-[2px] border-2 border-current" />;
 }
 
 function Router() {
