@@ -1,6 +1,6 @@
-# [Project name]
+# Ride Analyzer
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Ride Analyzer helps drivers log everyday trips and understand fuel economy, speed, traffic wait time, and ride trends.
 
 ## Run & Operate
 
@@ -22,19 +22,23 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/ride-analyzer/src/App.tsx` — single-page ride dashboard, calculations, local persistence, and history interactions
+- `artifacts/ride-analyzer/src/index.css` — visual theme, responsive layout utilities, and motion
+- `artifacts/ride-analyzer/src/main.tsx` — React entry point
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Ride records are stored in browser localStorage so the first version works without account or backend setup.
+- Demo rides seed on first visit to make the dashboard useful immediately; the user can reset or clear them.
+- Derived values such as moving pace and traffic percentage are calculated from the saved ride inputs.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Users can record a ride with distance, fuel, duration, traffic wait, speed, price, route, and notes; review calculated economy, cost, moving speed, and traffic share; search history; compare trends; and edit or delete records.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+The user wants an app that analyzes rides, including distance traveled, fuel consumption, average speed, top speed, and time waiting in traffic.
 
 ## Gotchas
 

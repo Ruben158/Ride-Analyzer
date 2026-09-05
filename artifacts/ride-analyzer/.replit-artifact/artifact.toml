@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Ride Analyzer"
+description = "A personal ride analytics app for recording trips and understanding distance, fuel economy, speed, traffic wait time, and ride trends over time."
+version = "1.0.0"
+id = "artifacts/ride-analyzer"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24516
+
+[services.development]
+run = "pnpm --filter @workspace/ride-analyzer run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/ride-analyzer", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/ride-analyzer/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24516"
+BASE_PATH = "/"
