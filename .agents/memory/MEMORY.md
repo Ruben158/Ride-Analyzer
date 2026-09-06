@@ -1,0 +1,1 @@
+- [Mobile sensor sessions](mobile-sensor-sessions.md) — web tabs can suspend sensor callbacks or reload when backgrounded, so active rides need local session checkpoints and recovery.

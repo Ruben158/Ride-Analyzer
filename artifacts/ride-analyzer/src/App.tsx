@@ -40,6 +40,7 @@ import { Route, Router as WouterRouter, Switch, useLocation } from 'wouter';
 
 const queryClient = new QueryClient();
 const STORAGE_KEY = 'ride-analyzer-live-rides-v1';
+const ACTIVE_STORAGE_KEY = 'ride-analyzer-active-session-v1';
 
 type WaitingPeriod = {
   id: string;
@@ -84,6 +85,26 @@ type LiveStats = {
   fuelCost: number;
 };
 
+type PositionSnapshot = {
+  latitude: number;
+  longitude: number;
+  timestamp: number;
+};
+
+type ActiveSessionSnapshot = {
+  label: string;
+  startAt: string;
+  savedAt: number;
+  live: LiveStats;
+  waitingPeriods: WaitingPeriod[];
+  activeWaitSince: string | null;
+  fuelEntries: FuelEntry[];
+  distanceMetres: number;
+  topSpeedKmh: number;
+  lastSpeedKmh: number | null;
+  lastPosition: PositionSnapshot | null;
+};
+
 type MotionPermission = 'unknown' | 'requesting' | 'granted' | 'denied';
 type TrackingPhase = 'ready' | 'active' | 'summary';
 
@@ -109,6 +130,15 @@ const readRides = (): Ride[] => {
     return saved ? (JSON.parse(saved) as Ride[]) : [];
   } catch {
     return [];
+  }
+};
+
+const readActiveSession = (): ActiveSessionSnapshot | null => {
+  try {
+    const saved = localStorage.getItem(ACTIVE_STORAGE_KEY);
+    return saved ? (JSON.parse(saved) as ActiveSessionSnapshot) : null;
+  } catch {
+    return null;
   }
 };
 
@@ -483,33 +513,38 @@ function HistoryRow({ ride, onDelete }: { ride: Ride; onDelete: (id: string) => 
 }
 
 function Home() {
+  const restoredSessionRef = useRef<ActiveSessionSnapshot | null>(readActiveSession());
+  const restoredSession = restoredSessionRef.current;
   const [rides, setRides] = useState<Ride[]>(readRides);
-  const [phase, setPhase] = useState<TrackingPhase>('ready');
-  const [label, setLabel] = useState('');
-  const [live, setLive] = useState<LiveStats>(emptyStats);
+  const [phase, setPhase] = useState<TrackingPhase>(() => (restoredSession ? 'active' : 'ready'));
+  const [label, setLabel] = useState(() => restoredSession?.label ?? '');
+  const [live, setLive] = useState<LiveStats>(() => restoredSession?.live ?? emptyStats);
   const [summary, setSummary] = useState<Ride | null>(null);
   const [showFuelDialog, setShowFuelDialog] = useState(false);
   const [notice, setNotice] = useState('');
   const [motionPermission, setMotionPermission] = useState<MotionPermission>('unknown');
   const [gpsState, setGpsState] = useState<'unknown' | 'searching' | 'ready' | 'denied'>('unknown');
-  const [activeWaitSince, setActiveWaitSince] = useState<string | null>(null);
+  const [activeWaitSince, setActiveWaitSince] = useState<string | null>(() => restoredSession?.activeWaitSince ?? null);
+  const [sessionRecovered, setSessionRecovered] = useState(() => Boolean(restoredSession));
   const [currentTime, setCurrentTime] = useState(Date.now());
 
-  const startAtRef = useRef<string | null>(null);
+  const startAtRef = useRef<string | null>(restoredSession?.startAt ?? null);
   const watchIdRef = useRef<number | null>(null);
   const intervalRef = useRef<number | null>(null);
+  const sensorsStartedRef = useRef(false);
   const motionHandlerRef = useRef<((event: DeviceMotionEvent) => void) | null>(null);
   const previousPositionRef = useRef<GeolocationPosition | null>(null);
   const lastSpeedRef = useRef<number | null>(null);
   const gpsStateRef = useRef<'unknown' | 'searching' | 'ready' | 'denied'>('unknown');
   const lastMotionAtRef = useRef(0);
   const motionIsLowRef = useRef(true);
-  const waitStartRef = useRef<string | null>(null);
-  const waitingPeriodsRef = useRef<WaitingPeriod[]>([]);
-  const distanceMetresRef = useRef(0);
-  const topSpeedRef = useRef(0);
-  const fuelEntriesRef = useRef<FuelEntry[]>([]);
-  const liveRef = useRef<LiveStats>(emptyStats);
+  const waitStartRef = useRef<string | null>(restoredSession?.activeWaitSince ?? null);
+  const waitingPeriodsRef = useRef<WaitingPeriod[]>(restoredSession?.waitingPeriods ?? []);
+  const distanceMetresRef = useRef(restoredSession?.distanceMetres ?? 0);
+  const topSpeedRef = useRef(restoredSession?.topSpeedKmh ?? 0);
+  const fuelEntriesRef = useRef<FuelEntry[]>(restoredSession?.fuelEntries ?? []);
+  const lastPositionSnapshotRef = useRef<PositionSnapshot | null>(restoredSession?.lastPosition ?? null);
+  const liveRef = useRef<LiveStats>(restoredSession?.live ?? emptyStats);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(rides));
@@ -563,7 +598,54 @@ function Home() {
     setLive(next);
   };
 
+  const persistActiveSession = () => {
+    if (!startAtRef.current) return;
+    const now = Date.now();
+    const elapsedSeconds = Math.max(
+      0,
+      Math.round((now - new Date(startAtRef.current).getTime()) / 1000),
+    );
+    const openWaitSeconds = waitStartRef.current
+      ? Math.max(
+          0,
+          Math.round((now - new Date(waitStartRef.current).getTime()) / 1000),
+        )
+      : 0;
+    const distanceKm = distanceMetresRef.current / 1000;
+    const snapshot: ActiveSessionSnapshot = {
+      label,
+      startAt: startAtRef.current,
+      savedAt: now,
+      live: {
+        ...liveRef.current,
+        elapsedSeconds,
+        distanceKm,
+        averageSpeedKmh: elapsedSeconds > 0 ? distanceKm / (elapsedSeconds / 3600) : 0,
+        waitingPeriods: [...waitingPeriodsRef.current],
+        waitingSeconds: sumWaiting(waitingPeriodsRef.current) + openWaitSeconds,
+        fuelLitres: fuelEntriesRef.current.reduce((sum, entry) => sum + entry.litres, 0),
+        fuelCost: fuelEntriesRef.current.reduce(
+          (sum, entry) => sum + entry.litres * entry.pricePerLitre,
+          0,
+        ),
+      },
+      waitingPeriods: [...waitingPeriodsRef.current],
+      activeWaitSince: waitStartRef.current,
+      fuelEntries: [...fuelEntriesRef.current],
+      distanceMetres: distanceMetresRef.current,
+      topSpeedKmh: topSpeedRef.current,
+      lastSpeedKmh: lastSpeedRef.current,
+      lastPosition: lastPositionSnapshotRef.current,
+    };
+    try {
+      localStorage.setItem(ACTIVE_STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {
+      // The ride remains in memory if browser storage is unavailable.
+    }
+  };
+
   const cleanupSensors = () => {
+    sensorsStartedRef.current = false;
     if (watchIdRef.current !== null && navigator.geolocation) {
       navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
@@ -634,6 +716,7 @@ function Home() {
       averageSpeedKmh: elapsedSeconds > 0 ? distanceKm / (elapsedSeconds / 3600) : 0,
       waitingSeconds: sumWaiting(waitingPeriodsRef.current) + openWaitSeconds,
     });
+    persistActiveSession();
   };
 
   const enableMotion = async () => {
@@ -669,10 +752,102 @@ function Home() {
     }
   };
 
-  const startRide = async () => {
+  const startSensors = async () => {
+    if (sensorsStartedRef.current || !startAtRef.current) return;
+    sensorsStartedRef.current = true;
+    await enableMotion();
+
+    if ('geolocation' in navigator) {
+      setGpsState('searching');
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (position) => {
+          const previous = previousPositionRef.current;
+          const previousSnapshot = previous
+            ? {
+                latitude: previous.coords.latitude,
+                longitude: previous.coords.longitude,
+                timestamp: previous.timestamp,
+              }
+            : lastPositionSnapshotRef.current;
+          if (previousSnapshot) {
+            const deltaMetres = haversineMetres(
+              previousSnapshot.latitude,
+              previousSnapshot.longitude,
+              position.coords.latitude,
+              position.coords.longitude,
+            );
+            if (deltaMetres < 500) distanceMetresRef.current += Math.max(0, deltaMetres);
+            const elapsed = (position.timestamp - previousSnapshot.timestamp) / 1000;
+            if (
+              elapsed > 0 &&
+              (position.coords.speed === null ||
+                !Number.isFinite(position.coords.speed) ||
+                position.coords.speed < 0)
+            ) {
+              lastSpeedRef.current = Math.max(0, (deltaMetres / elapsed) * 3.6);
+            }
+          }
+          previousPositionRef.current = position;
+          lastPositionSnapshotRef.current = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            timestamp: position.timestamp,
+          };
+          const reportedSpeed = position.coords.speed;
+          if (reportedSpeed !== null && Number.isFinite(reportedSpeed) && reportedSpeed >= 0) {
+            lastSpeedRef.current = reportedSpeed * 3.6;
+          }
+          topSpeedRef.current = Math.max(topSpeedRef.current, Math.max(0, lastSpeedRef.current ?? 0));
+          setGpsState('ready');
+          setLiveStats({
+            ...liveRef.current,
+            speedKmh: lastSpeedRef.current,
+            topSpeedKmh: topSpeedRef.current,
+            distanceKm: distanceMetresRef.current / 1000,
+          });
+          persistActiveSession();
+        },
+        () => setGpsState('denied'),
+        { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+      );
+    } else {
+      setGpsState('denied');
+    }
+    intervalRef.current = window.setInterval(evaluateWaiting, 1000);
+  };
+
+  useEffect(() => {
+    if (!restoredSession || !startAtRef.current) return;
+    setGpsState('searching');
+    setNotice('Your active ride was recovered. Sensor readings resume while this screen is open.');
+    void startSensors();
+  }, []);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        persistActiveSession();
+        if (phase === 'active') cleanupSensors();
+      } else if (document.visibilityState === 'visible' && phase === 'active') {
+        void startSensors();
+      }
+    };
+    const handlePageHide = () => persistActiveSession();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handlePageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handlePageHide);
+    };
+  }, [phase]);
+
+  const startRide = () => {
     const startedAt = new Date().toISOString();
     startAtRef.current = startedAt;
     previousPositionRef.current = null;
+    lastPositionSnapshotRef.current = null;
     lastSpeedRef.current = null;
     lastMotionAtRef.current = Date.now();
     motionIsLowRef.current = true;
@@ -683,51 +858,17 @@ function Home() {
     fuelEntriesRef.current = [];
     setLiveStats(emptyStats);
     setSummary(null);
+    setSessionRecovered(false);
     setPhase('active');
     setGpsState('searching');
     setNotice('Ride started. Keep the phone steady and drive safely.');
-
-    await enableMotion();
-
-    if ('geolocation' in navigator) {
-      watchIdRef.current = navigator.geolocation.watchPosition(
-        (position) => {
-          const previous = previousPositionRef.current;
-          if (previous) {
-            const deltaMetres = haversineMetres(
-              previous.coords.latitude,
-              previous.coords.longitude,
-              position.coords.latitude,
-              position.coords.longitude,
-            );
-            if (deltaMetres < 500) distanceMetresRef.current += Math.max(0, deltaMetres);
-            const elapsed = (position.timestamp - previous.timestamp) / 1000;
-            if (elapsed > 0 && (position.coords.speed === null || !Number.isFinite(position.coords.speed) || position.coords.speed < 0)) {
-              lastSpeedRef.current = Math.max(0, (deltaMetres / elapsed) * 3.6);
-            }
-          }
-          previousPositionRef.current = position;
-          const reportedSpeed = position.coords.speed;
-          if (reportedSpeed !== null && Number.isFinite(reportedSpeed) && reportedSpeed >= 0) {
-            lastSpeedRef.current = reportedSpeed * 3.6;
-          }
-          const speed = Math.max(0, lastSpeedRef.current ?? 0);
-          topSpeedRef.current = Math.max(topSpeedRef.current, speed);
-          setGpsState('ready');
-          setLiveStats({
-            ...liveRef.current,
-            speedKmh: lastSpeedRef.current,
-            topSpeedKmh: topSpeedRef.current,
-            distanceKm: distanceMetresRef.current / 1000,
-          });
-        },
-        () => setGpsState('denied'),
-        { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
-      );
-    } else {
-      setGpsState('denied');
+    try {
+      localStorage.removeItem(ACTIVE_STORAGE_KEY);
+    } catch {
+      // Continue recording in memory if browser storage is unavailable.
     }
-    intervalRef.current = window.setInterval(evaluateWaiting, 1000);
+    void startSensors();
+    persistActiveSession();
   };
 
   const addFuel = (litres: number, pricePerLitre: number) => {
@@ -744,6 +885,7 @@ function Home() {
       0,
     );
     setLiveStats({ ...liveRef.current, fuelLitres, fuelCost });
+    persistActiveSession();
     setShowFuelDialog(false);
     setNotice(`${formatNumber(litres, 2)} litres added to this ride.`);
   };
@@ -780,6 +922,11 @@ function Home() {
       fuelEntries: [...fuelEntriesRef.current],
     };
     cleanupSensors();
+    try {
+      localStorage.removeItem(ACTIVE_STORAGE_KEY);
+    } catch {
+      // The completed ride is still saved in the ride history.
+    }
     setLiveStats({
       ...liveRef.current,
       elapsedSeconds,
@@ -801,6 +948,11 @@ function Home() {
 
   const resetForNewRide = () => {
     cleanupSensors();
+    try {
+      localStorage.removeItem(ACTIVE_STORAGE_KEY);
+    } catch {
+      // Nothing to clear if browser storage is unavailable.
+    }
     startAtRef.current = null;
     setPhase('ready');
     setSummary(null);
@@ -809,6 +961,7 @@ function Home() {
     setMotionPermission('unknown');
     setGpsState('unknown');
     setActiveWaitSince(null);
+    setSessionRecovered(false);
   };
 
   const deleteRide = (id: string) => {
@@ -963,6 +1116,12 @@ function Home() {
                       <SensorPill icon={LocateFixed} label={gpsState === 'ready' ? 'GPS speed on' : gpsState === 'denied' ? 'GPS unavailable' : 'GPS…'} active={gpsState === 'ready'} />
                     </div>
                   </div>
+                  {sessionRecovered && (
+                    <div className="mt-5 flex items-start gap-2 rounded-xl border border-[#f6bd80]/25 bg-[#f6bd80]/10 px-4 py-3 text-xs leading-5 text-[#f6bd80]">
+                      <Info size={14} className="mt-0.5 shrink-0" />
+                      <span><strong>Ride recovered.</strong> The browser paused sensor readings while the screen was locked or this tab was away. Tracking is live again now; the time gap is kept in the ride duration but no speed is guessed for it.</span>
+                    </div>
+                  )}
                   <div className="mt-8 grid gap-5 lg:grid-cols-[1.05fr_1fr]">
                     <div className="rounded-2xl border border-[#465263] bg-[#202a38]/60 p-5 sm:p-7">
                       <p className="text-[10px] font-bold uppercase tracking-[.18em] text-[#89959c]">Current speed</p>
