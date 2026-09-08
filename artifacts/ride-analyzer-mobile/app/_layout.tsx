@@ -1,4 +1,9 @@
 import React, { useEffect } from 'react';
+// Registers the background location task as a side effect of import. This
+// must run at app startup — including when iOS relaunches the app in the
+// background purely to deliver a location update — so it's imported here
+// at the root, not inside a screen that might not mount.
+import '@/lib/locationTracking';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
