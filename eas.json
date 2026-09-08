@@ -6,13 +6,16 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "corepack": true
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "corepack": true
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "corepack": true
     }
   },
   "submit": {
