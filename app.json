@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "a2e889b8-33f1-425c-a0b9-521daa12ab08"
+      }
+    },
+    "android": {
+      "package": "com.rubendsouza.rideanalyzermobile"
+    }
+  }
+}
