@@ -147,25 +147,25 @@ export default function RideScreen() {
 
       <View style={[styles.statsCard, { backgroundColor: colors.card }]}>
         <View style={styles.statRow}>
-          <Text style={[styles.statLabel, { color: colors.muted }]}>Duration</Text>
+          <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>Duration</Text>
           <Text style={[styles.statValue, { color: colors.text }]}>
             {formatDuration(live?.durationSeconds ?? 0)}
           </Text>
         </View>
         <View style={styles.statRow}>
-          <Text style={[styles.statLabel, { color: colors.muted }]}>Distance</Text>
+          <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>Distance</Text>
           <Text style={[styles.statValue, { color: colors.text }]}>
             {formatDistance(live?.distanceMeters ?? 0)}
           </Text>
         </View>
         <View style={styles.statRow}>
-          <Text style={[styles.statLabel, { color: colors.muted }]}>Avg speed</Text>
+          <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>Avg speed</Text>
           <Text style={[styles.statValue, { color: colors.text }]}>
             {formatSpeed(live?.avgSpeedMps ?? 0)}
           </Text>
         </View>
         <View style={styles.statRow}>
-          <Text style={[styles.statLabel, { color: colors.muted }]}>Max speed</Text>
+          <Text style={[styles.statLabel, { color: colors.mutedForeground }]}>Max speed</Text>
           <Text style={[styles.statValue, { color: colors.text }]}>
             {formatSpeed(live?.maxSpeedMps ?? 0)}
           </Text>
@@ -191,7 +191,7 @@ export default function RideScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={
-          <Text style={[styles.emptyText, { color: colors.muted }]}>
+          <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
             No rides yet. Start your first ride above.
           </Text>
         }
@@ -201,13 +201,13 @@ export default function RideScreen() {
               {new Date(item.startedAt).toLocaleString()}
             </Text>
             <View style={styles.rideStatsRow}>
-              <Text style={[styles.rideStat, { color: colors.muted }]}>
+              <Text style={[styles.rideStat, { color: colors.mutedForeground }]}>
                 {formatDuration(item.durationSeconds)}
               </Text>
-              <Text style={[styles.rideStat, { color: colors.muted }]}>
+              <Text style={[styles.rideStat, { color: colors.mutedForeground }]}>
                 {formatDistance(item.distanceMeters)}
               </Text>
-              <Text style={[styles.rideStat, { color: colors.muted }]}>
+              <Text style={[styles.rideStat, { color: colors.mutedForeground }]}>
                 {formatSpeed(item.avgSpeedMps)} avg
               </Text>
             </View>
@@ -246,45 +246,3 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 16,
     fontWeight: '600',
-  },
-  button: {
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  listContent: {
-    paddingBottom: 24,
-  },
-  emptyText: {
-    fontSize: 14,
-    marginTop: 8,
-  },
-  rideItem: {
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
-  },
-  rideDate: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  rideStatsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  rideStat: {
-    fontSize: 13,
-  },
-});
