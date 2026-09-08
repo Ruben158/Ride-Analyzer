@@ -1,30 +1,39 @@
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  AppState,
+  FlatList,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { useColors } from '@/hooks/useColors';
+import {
+  type ActiveSession,
+  type RideSummary,
+  getActiveSession,
+  getLiveStats,
+  getRides,
+  requestLocationPermissions,
+  startRideTracking,
+  stopRideTracking,
+} from '@/lib/locationTracking';
 
-export default function TabOneScreen() {
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Replit Agent is building...</Text>
-      <Text style={styles.text}>
-        Your app will appear here once it's ready.
-      </Text>
-    </View>
-  );
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  text: {
-    fontSize: 16,
-    textAlign: 'center',
-    paddingHorizontal: 20,
-  },
-});
+export default function RideScreen() {
+  const colors = useColors();
+  const [session, setSession] = useState<ActiveSession | null>(null);
+  const [live, setLive] = useState<RideSummary | null>(null);
+  const [rides, setRides] = useState<RideSummary[]>([]);
+  const [busy, setBusy] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const
