@@ -246,3 +246,45 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 16,
     fontWeight: '600',
+  },
+  button: {
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  listContent: {
+    paddingBottom: 24,
+  },
+  emptyText: {
+    fontSize: 14,
+    marginTop: 8,
+  },
+  rideItem: {
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+  },
+  rideDate: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  rideStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  rideStat: {
+    fontSize: 13,
+  },
+});
