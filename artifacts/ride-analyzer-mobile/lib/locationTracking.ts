@@ -58,7 +58,6 @@ async function saveActiveSessionRaw(session: ActiveSession | null): Promise<void
   }
 }
 
-// Background task: runs even when the app is backgrounded or the screen is locked.
 TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) {
     console.error('Background location task error:', error);
@@ -102,27 +101,41 @@ export async function startRideTracking(): Promise<ActiveSession> {
     startedAt: Date.now(),
     points: [],
   };
-  await saveActiveSessionRaw(session);
 
-  await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
-    accuracy: Location.Accuracy.BestForNavigation,
-    timeInterval: 5000,
-    distanceInterval: 10,
-    showsBackgroundLocationIndicator: true,
-    foregroundService: {
-      notificationTitle: 'Ride Analyzer',
-      notificationBody: 'Tracking your ride in the background',
-    },
-    pausesUpdatesAutomatically: false,
-  });
+  try {
+    await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
+      accuracy: Location.Accuracy.BestForNavigation,
+      timeInterval: 5000,
+      distanceInterval: 10,
+      showsBackgroundLocationIndicator: true,
+      foregroundService: {
+        notificationTitle: 'Ride Analyzer',
+        notificationBody: 'Tracking your ride in the background',
+      },
+      pausesUpdatesAutomatically: false,
+    });
+  } catch (err) {
+    // Surface the real native error instead of letting it crash silently.
+    throw new Error(`Failed to start location updates: ${String(err)}`);
+  }
+
+  // Only persist the session AFTER the native service actually starts,
+  // so a failed start doesn't leave a "phantom" active session behind.
+  await saveActiveSessionRaw(session);
 
   return session;
 }
 
 export async function stopRideTracking(): Promise<RideSummary | null> {
-  const isRunning = await TaskManager.isTaskRegisteredAsync(LOCATION_TASK_NAME);
-  if (isRunning) {
-    await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+  try {
+    const hasStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME);
+    if (hasStarted) {
+      await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
+    }
+  } catch (err) {
+    console.error('Error stopping location updates:', err);
+    // Don't rethrow — we still want to clear the session below even if
+    // the native stop call fails, so the app doesn't get stuck.
   }
 
   const session = await getActiveSessionRaw();
