@@ -10,7 +10,9 @@
     "ios": {
       "supportsTablet": false,
       "infoPlist": {
-        "UIBackgroundModes": ["location"],
+        "UIBackgroundModes": [
+          "location"
+        ],
         "NSLocationWhenInUseUsageDescription": "Ride Analyzer needs your location to track distance and speed while you drive.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Ride Analyzer needs background location access to keep tracking your ride while your phone is locked or the app is in the background."
       }
@@ -21,8 +23,14 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
-      ]
+        "FOREGROUND_SERVICE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ],
+      "package": "com.rubendsouza.rideanalyzermobile"
     },
     "web": {
       "favicon": "./assets/images/icon.png"
@@ -41,6 +49,11 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "da82a136-d194-4a12-a85f-57e59a2d0274"
+      }
     }
   }
 }
