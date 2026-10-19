@@ -1,7 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Location from 'expo-location';
-import * as TaskManager from 'expo-task-manager';
-import { Platform } from 'react-native';
+import type * as Location from 'expo-location';
 
 export const LOCATION_TASK = 'ride-analyzer-background-location';
 export const ACTIVE_SESSION_KEY = 'ride-analyzer-mobile-active-v1';
@@ -42,23 +39,6 @@ export type ActiveRide = {
   activeWaitSince: string | null;
   fuelEntries: FuelEntry[];
   savedAt: number;
-};
-
-const readJson = async <T,>(key: string, fallback: T): Promise<T> => {
-  try {
-    const value = await AsyncStorage.getItem(key);
-    return value ? (JSON.parse(value) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const saveActiveRide = async (ride: ActiveRide) => {
-  try {
-    await AsyncStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(ride));
-  } catch {
-    // Ignore storage quota errors
-  }
 };
 
 export const haversineMetres = (
@@ -127,7 +107,6 @@ export function applyLocationUpdateToRide(
     return activeRide;
   }
 
-  // Avoid duplicate processing if foreground and background watchers deliver the same fix
   if (
     previous &&
     Math.abs(locTimestamp - previous.timestamp) < 250 &&
@@ -220,47 +199,4 @@ export function applyLocationUpdateToRide(
   };
   activeRide.savedAt = nowWall;
   return activeRide;
-}
-
-if (Platform.OS !== 'web') {
-  try {
-    if (!TaskManager.isTaskDefined(LOCATION_TASK)) {
-      TaskManager.defineTask<{ locations?: Location.LocationObject[] }>(
-        LOCATION_TASK,
-        async ({ data, error }) => {
-          if (error) {
-            console.warn('Ride location task failed:', error.message);
-            return;
-          }
-
-          try {
-            const locations = (data?.locations ?? []).filter(
-              (l) =>
-                l &&
-                l.coords &&
-                Number.isFinite(l.coords.latitude) &&
-                Number.isFinite(l.coords.longitude),
-            );
-            if (locations.length === 0) return;
-            const activeRide = await readJson<ActiveRide | null>(ACTIVE_SESSION_KEY, null);
-            if (!activeRide) return;
-
-            for (const location of locations) {
-              applyLocationUpdateToRide(activeRide, location);
-            }
-
-            const stillActive = await readJson<ActiveRide | null>(ACTIVE_SESSION_KEY, null);
-            if (stillActive && stillActive.id === activeRide.id) {
-              activeRide.fuelEntries = stillActive.fuelEntries ?? activeRide.fuelEntries;
-              await saveActiveRide(activeRide);
-            }
-          } catch (taskError) {
-            console.warn('Ride location task error:', taskError);
-          }
-        },
-      );
-    }
-  } catch (defineError) {
-    console.warn('Could not register background location task:', defineError);
-  }
 }

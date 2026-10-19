@@ -1,4 +1,3 @@
-import '@/lib/backgroundLocationTask';
 import React, { useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';

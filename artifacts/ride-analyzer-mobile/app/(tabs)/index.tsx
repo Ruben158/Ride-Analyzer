@@ -3,7 +3,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import * as Location from 'expo-location';
-import * as TaskManager from 'expo-task-manager';
 import { StatusBar } from 'expo-status-bar';
 import {
   Alert,
@@ -24,7 +23,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import {
   ACTIVE_SESSION_KEY,
-  LOCATION_TASK,
   type ActiveRide,
   type FuelEntry,
   type WaitingPeriod,
@@ -93,15 +91,41 @@ const formatDuration = (totalSeconds: number) => {
 };
 
 const formatClock = (date: string) => {
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return '--:--';
-  return parsed.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  try {
+    const parsed = new Date(date);
+    if (Number.isNaN(parsed.getTime())) return '--:--';
+    const hours24 = parsed.getHours();
+    const minutes = String(parsed.getMinutes()).padStart(2, '0');
+    const period = hours24 >= 12 ? 'PM' : 'AM';
+    const hours12 = hours24 % 12 || 12;
+    return `${hours12}:${minutes} ${period}`;
+  } catch {
+    return '--:--';
+  }
 };
 
 const formatRideDate = (date: string) => {
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return 'Unknown date';
-  return parsed.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  try {
+    const parsed = new Date(date);
+    if (Number.isNaN(parsed.getTime())) return 'Unknown date';
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    return `${months[parsed.getMonth()]} ${parsed.getDate()}, ${parsed.getFullYear()}`;
+  } catch {
+    return 'Unknown date';
+  }
 };
 
 const storedWaitSeconds = (ride: ActiveRide, now: number) =>
@@ -113,16 +137,10 @@ const storedWaitSeconds = (ride: ActiveRide, now: number) =>
 const num = (value: unknown) =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 export default function RideRecorderScreen() {
   const colors = useColors();
   const colorScheme = useColorScheme();
   const styles = makeStyles(colors);
-  const [foregroundPermission, requestForegroundPermission] =
-    Location.useForegroundPermissions();
-  const [backgroundPermission, requestBackgroundPermission] =
-    Location.useBackgroundPermissions();
   const [isReady, setIsReady] = useState(false);
   const [activeRide, setActiveRide] = useState<ActiveRide | null>(null);
   const [rides, setRides] = useState<Ride[]>([]);
@@ -131,20 +149,21 @@ export default function RideRecorderScreen() {
   const [now, setNow] = useState(Date.now());
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
-  const [backgroundActive, setBackgroundActive] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [fuelDialogOpen, setFuelDialogOpen] = useState(false);
   const [fuelLitres, setFuelLitres] = useState('');
   const [fuelPrice, setFuelPrice] = useState('');
 
   const watchSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingInFlightRef = useRef(false);
   const activeRideRef = useRef<ActiveRide | null>(null);
 
   useEffect(() => {
     activeRideRef.current = activeRide;
   }, [activeRide]);
 
-  const stopForegroundWatcher = () => {
+  const stopAllTracking = () => {
     if (watchSubscriptionRef.current) {
       try {
         watchSubscriptionRef.current.remove();
@@ -153,26 +172,18 @@ export default function RideRecorderScreen() {
       }
       watchSubscriptionRef.current = null;
     }
-  };
-
-  const stopAllTracking = async () => {
-    stopForegroundWatcher();
-    if (Platform.OS !== 'web') {
-      try {
-        if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK)) {
-          await Location.stopLocationUpdatesAsync(LOCATION_TASK);
-        }
-      } catch {
-        // Ignore stop errors
-      }
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
     }
-    setBackgroundActive(false);
+    pollingInFlightRef.current = false;
   };
 
-  const handleForegroundLocation = async (location: Location.LocationObject) => {
+  const handleLocationSample = async (location: Location.LocationObject | null) => {
+    if (!location || !location.coords) return;
     const current =
-      (await readJson<ActiveRide | null>(ACTIVE_SESSION_KEY, null)) ??
-      activeRideRef.current;
+      activeRideRef.current ??
+      (await readJson<ActiveRide | null>(ACTIVE_SESSION_KEY, null));
     if (!current) return;
     const updated = applyLocationUpdateToRide({ ...current }, location);
     activeRideRef.current = updated;
@@ -180,89 +191,79 @@ export default function RideRecorderScreen() {
     await saveActiveRide(updated);
   };
 
-  const startForegroundWatcher = async () => {
-    stopForegroundWatcher();
+  const pollSingleLocation = async () => {
+    if (pollingInFlightRef.current || !activeRideRef.current) return;
+    pollingInFlightRef.current = true;
     try {
-      const initial = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
       });
-      await handleForegroundLocation(initial);
+      await handleLocationSample(position);
     } catch {
-      // Initial fix is optional before watchPositionAsync starts
-    }
-
-    try {
-      watchSubscriptionRef.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.BestForNavigation,
-          timeInterval: 1000,
-          distanceInterval: 0,
-        },
-        (loc) => {
-          void handleForegroundLocation(loc);
-        },
-      );
-    } catch {
-      watchSubscriptionRef.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: 2000,
-          distanceInterval: 2,
-        },
-        (loc) => {
-          void handleForegroundLocation(loc);
-        },
-      );
+      try {
+        const fallback = await Location.getLastKnownPositionAsync();
+        if (fallback) {
+          await handleLocationSample(fallback);
+        }
+      } catch {
+        // Ignore transient GPS timeout
+      }
+    } finally {
+      pollingInFlightRef.current = false;
     }
   };
 
-  const tryStartBackgroundService = async (): Promise<boolean> => {
-    if (Platform.OS === 'web') return false;
+  const startLocationTracking = async () => {
+    stopAllTracking();
+
+    // Prime first reading without blocking or crashing
+    void pollSingleLocation();
+
+    // Poll every 1.5s via Promise-based getCurrentPositionAsync (never spawns a native Service or TaskManager)
+    pollIntervalRef.current = setInterval(() => {
+      void pollSingleLocation();
+    }, 1500);
+
+    // Also attach in-process watchPositionAsync if supported
     try {
-      const taskManagerAvailable = await TaskManager.isAvailableAsync();
-      if (!taskManagerAvailable) return false;
-
-      const bgPerm = await Location.getBackgroundPermissionsAsync();
-      if (!bgPerm.granted) return false;
-
-      if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
-        try {
-          await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-          );
-        } catch {
-          // Non-fatal if notification permission prompt is dismissed
-        }
-      }
-
-      // Wait until the Activity is fully in the foreground RESUMED state
-      // to avoid Android 12+ ForegroundServiceStartNotAllowedException
-      await delay(400);
-      if (AppState.currentState !== 'active') {
-        return false;
-      }
-
-      const alreadyStarted = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
-      if (!alreadyStarted) {
-        await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+      watchSubscriptionRef.current = await Location.watchPositionAsync(
+        {
           accuracy: Location.Accuracy.High,
-          timeInterval: 2000,
-          distanceInterval: 5,
-          pausesUpdatesAutomatically: false,
-          showsBackgroundLocationIndicator: true,
-          foregroundService: {
-            notificationTitle: 'Ride Analyzer is recording',
-            notificationBody: 'Ride location tracking is active. Tap to return to your ride.',
-            notificationColor: '#F57F4D',
-            killServiceOnDestroy: false,
-          },
-        });
+          timeInterval: 1500,
+          distanceInterval: 2,
+        },
+        (loc) => {
+          void handleLocationSample(loc);
+        },
+      );
+    } catch {
+      // Polling loop above continues seamlessly if watchPositionAsync fails
+    }
+  };
+
+  const requestLocationAccess = async (): Promise<boolean> => {
+    try {
+      if (Platform.OS === 'android') {
+        const fineGranted = await PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        );
+        if (fineGranted) return true;
+
+        const result = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+        ]);
+        const fine = result[PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION];
+        const coarse = result[PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION];
+        return (
+          fine === PermissionsAndroid.RESULTS.GRANTED ||
+          coarse === PermissionsAndroid.RESULTS.GRANTED
+        );
       }
-      setBackgroundActive(true);
-      return true;
-    } catch (bgError) {
-      console.warn('Background location service could not start, using foreground GPS:', bgError);
-      setBackgroundActive(false);
+
+      const fg = await Location.requestForegroundPermissionsAsync();
+      return Boolean(fg?.granted);
+    } catch {
       return false;
     }
   };
@@ -283,18 +284,13 @@ export default function RideRecorderScreen() {
       setRides(sortedRides);
 
       if (savedActiveRide && savedActiveRide.startAt) {
-        const fgPerm = await Location.getForegroundPermissionsAsync().catch(() => null);
-        if (mounted && fgPerm?.granted) {
+        const hasPerm = await requestLocationAccess();
+        if (mounted && hasPerm) {
           setActiveRide(savedActiveRide);
           activeRideRef.current = savedActiveRide;
-          await startForegroundWatcher().catch(() => {});
-          const bgRunning = await tryStartBackgroundService();
+          await startLocationTracking();
           if (mounted) {
-            setNotice(
-              bgRunning
-                ? 'Your ride is still recording. You can lock your phone safely.'
-                : 'Your ride is recording while the app is open.',
-            );
+            setNotice('Your ride was recovered and is recording live.');
           }
         } else {
           await saveActiveRide(null);
@@ -305,19 +301,18 @@ export default function RideRecorderScreen() {
     void hydrate();
     return () => {
       mounted = false;
-      stopForegroundWatcher();
+      stopAllTracking();
     };
   }, []);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && activeRideRef.current) {
-        void (async () => {
-          if (!watchSubscriptionRef.current) {
-            await startForegroundWatcher().catch(() => {});
-          }
-          await tryStartBackgroundService();
-        })();
+        if (!pollIntervalRef.current) {
+          void startLocationTracking();
+        } else {
+          void pollSingleLocation();
+        }
       }
     });
     return () => sub.remove();
@@ -327,22 +322,19 @@ export default function RideRecorderScreen() {
     const timer = setInterval(() => {
       const currentTime = Date.now();
       setNow(currentTime);
-      if (activeRide) {
-        void readJson<ActiveRide | null>(ACTIVE_SESSION_KEY, null)
-          .then(async (updated) => {
-            if (!updated || updated.id !== activeRide.id) return;
-            const lastMove = updated.lastMovementAt ?? updated.lastPosition?.wallTime ?? 0;
-            if (updated.lastSpeedKmh > 0 && lastMove > 0 && currentTime - lastMove >= 4500) {
-              updated.lastSpeedKmh = 0;
-              if (!updated.activeWaitSince) {
-                updated.activeWaitSince = new Date(currentTime).toISOString();
-              }
-              await saveActiveRide(updated);
-            }
-            activeRideRef.current = updated;
-            setActiveRide(updated);
-          })
-          .catch(() => {});
+      const current = activeRideRef.current;
+      if (current) {
+        const lastMove = current.lastMovementAt ?? current.lastPosition?.wallTime ?? 0;
+        if (current.lastSpeedKmh > 0 && lastMove > 0 && currentTime - lastMove >= 4500) {
+          const updated: ActiveRide = {
+            ...current,
+            lastSpeedKmh: 0,
+            activeWaitSince: current.activeWaitSince ?? new Date(currentTime).toISOString(),
+          };
+          activeRideRef.current = updated;
+          setActiveRide(updated);
+          void saveActiveRide(updated);
+        }
       }
     }, 1000);
     return () => clearInterval(timer);
@@ -355,54 +347,31 @@ export default function RideRecorderScreen() {
     ]);
   };
 
-  const enableLockScreenTracking = async () => {
-    try {
-      const bg = await requestBackgroundPermission();
-      if (bg.granted) {
-        const started = await tryStartBackgroundService();
-        if (started) {
-          setNotice('Locked-screen recording enabled.');
-        }
-      } else {
-        showPermissionSettings(
-          'Allow location all the time',
-          'Choose “Allow all the time” in Android Location settings so Ride Analyzer can keep recording when your screen is locked.',
-        );
-      }
-    } catch {
-      showPermissionSettings(
-        'Allow location all the time',
-        'Choose “Allow all the time” in Android Location settings so Ride Analyzer can keep recording when your screen is locked.',
-      );
-    }
-  };
-
   const startRide = async () => {
     if (!isReady || busy || activeRide) return;
 
     setBusy(true);
     try {
-      if (!(await Location.hasServicesEnabledAsync())) {
-        Alert.alert(
-          'Turn on Location',
-          'Enable Location in your device settings before starting a ride.',
+      const hasPermission = await requestLocationAccess();
+      if (!hasPermission) {
+        showPermissionSettings(
+          'Location permission needed',
+          'Allow Location access in Settings so Ride Analyzer can measure speed and distance.',
         );
         return;
       }
 
-      let foreground = foregroundPermission;
-      if (!foreground?.granted) {
-        foreground = await requestForegroundPermission();
+      let servicesEnabled = true;
+      try {
+        servicesEnabled = await Location.hasServicesEnabledAsync();
+      } catch {
+        servicesEnabled = true;
       }
-      if (!foreground?.granted) {
-        if (!foreground?.canAskAgain) {
-          showPermissionSettings(
-            'Location permission needed',
-            'Allow location while using the app so Ride Analyzer can measure this ride.',
-          );
-        } else {
-          setNotice('Location permission is needed to start a ride.');
-        }
+      if (!servicesEnabled) {
+        Alert.alert(
+          'Turn on Location',
+          'Enable Location in your phone settings before starting a ride.',
+        );
         return;
       }
 
@@ -430,17 +399,11 @@ export default function RideRecorderScreen() {
       setRideName('');
       setActiveRide(session);
       setNow(nowMs);
+      setNotice('Recording started. Live GPS tracking is active.');
 
-      await startForegroundWatcher();
-
-      const bgStarted = await tryStartBackgroundService();
-      setNotice(
-        bgStarted
-          ? 'Recording started. Lock your phone; the ride service will keep tracking.'
-          : 'Recording started! Keep the app on screen, or tap below to enable locked-screen tracking.',
-      );
+      await startLocationTracking();
     } catch (error) {
-      await stopAllTracking();
+      stopAllTracking();
       await saveActiveRide(null).catch(() => {});
       activeRideRef.current = null;
       setActiveRide(null);
@@ -455,6 +418,7 @@ export default function RideRecorderScreen() {
     if (!activeRide || busy) return;
     setBusy(true);
     try {
+      stopAllTracking();
       const latest = await readJson<ActiveRide | null>(ACTIVE_SESSION_KEY, activeRide);
       const session = latest ?? activeRide;
       const endedAt = new Date().toISOString();
@@ -484,7 +448,6 @@ export default function RideRecorderScreen() {
         fuelEntries: Array.isArray(session.fuelEntries) ? session.fuelEntries : [],
       };
 
-      await stopAllTracking();
       const updatedRides = [ride, ...rides.filter((item) => item.id !== ride.id)];
       await AsyncStorage.setItem(RIDE_HISTORY_KEY, JSON.stringify(updatedRides));
       await saveActiveRide(null);
@@ -518,7 +481,7 @@ export default function RideRecorderScreen() {
           void (async () => {
             setBusy(true);
             try {
-              await stopAllTracking();
+              stopAllTracking();
               await saveActiveRide(null);
               activeRideRef.current = null;
               setActiveRide(null);
@@ -753,22 +716,11 @@ export default function RideRecorderScreen() {
 
             <View style={styles.backgroundNote}>
               <Feather name="smartphone" size={16} color={colors.primary} />
-              <View style={{ flex: 1, gap: 6 }}>
-                <Text style={styles.backgroundNoteText}>
-                  {backgroundActive
-                    ? 'Screen can be locked. Keep the Ride Analyzer location notification active.'
-                    : 'Recording live while the app is on screen.'}
-                  {'\n'}
-                  {activeRide.lastPosition
-                    ? `GPS: ${activeRide.locationSamples ?? 1} fixes · last fix ${formatDuration(Math.max(0, (now - activeRide.lastPosition.timestamp) / 1000))} ago`
-                    : 'GPS: waiting for the first fix. Keep Location on and move outdoors.'}
-                </Text>
-                {!backgroundActive && Platform.OS !== 'web' && (
-                  <Pressable onPress={() => void enableLockScreenTracking()}>
-                    <Text style={styles.textLink}>Enable locked-screen tracking →</Text>
-                  </Pressable>
-                )}
-              </View>
+              <Text style={styles.backgroundNoteText}>
+                {activeRide.lastPosition
+                  ? `GPS active · ${activeRide.locationSamples ?? 1} fixes · last fix ${formatDuration(Math.max(0, (now - (activeRide.lastPosition.wallTime ?? activeRide.lastPosition.timestamp)) / 1000))} ago`
+                  : 'GPS: waiting for the first satellite fix. Keep Location on and move outdoors.'}
+              </Text>
             </View>
 
             <View style={styles.actionRow}>
@@ -803,7 +755,7 @@ export default function RideRecorderScreen() {
                 Ready when <Text style={styles.heroAccent}>you are.</Text>
               </Text>
               <Text style={styles.heroBody}>
-                Start a ride, lock your phone, and get the full trip details when you arrive.
+                Start a ride and get live speed, distance, fuel, and traffic waiting details when you arrive.
               </Text>
             </View>
 
@@ -842,7 +794,7 @@ export default function RideRecorderScreen() {
               <View style={styles.permissionHint}>
                 <Feather name="map-pin" size={13} color={colors.mutedForeground} />
                 <Text style={styles.permissionHintText}>
-                  Location access is needed for speed and distance. “Allow all the time” enables lock-screen tracking.
+                  Location access is used to measure live speed, distance, and traffic pauses.
                 </Text>
               </View>
             </View>
