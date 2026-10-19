@@ -1,7 +1,10 @@
 package com.rideanalyzer.mobile
 
 import android.app.Application
+import android.content.Context
 import android.content.res.Configuration
+import android.os.Looper
+import android.util.Log
 
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -27,8 +30,59 @@ class MainApplication : Application(), ReactApplication {
     )
   }
 
+  private fun isRecoverableNativeCrash(throwable: Throwable): Boolean {
+    val stack = throwable.stackTraceToString()
+    val className = throwable.javaClass.name
+    return stack.contains("expo.modules.location") ||
+      stack.contains("expo.modules.taskManager") ||
+      stack.contains("LocationTask") ||
+      stack.contains("TaskService") ||
+      stack.contains("ForegroundService") ||
+      stack.contains("FusedLocation") ||
+      className.contains("ForegroundService") ||
+      throwable is SecurityException
+  }
+
+  private fun installCrashShield() {
+    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+      if (isRecoverableNativeCrash(throwable)) {
+        Log.e("RideAnalyzer", "Caught recoverable native location/service exception", throwable)
+        if (thread == Looper.getMainLooper().thread) {
+          while (true) {
+            try {
+              Looper.loop()
+            } catch (nextThrowable: Throwable) {
+              if (isRecoverableNativeCrash(nextThrowable)) {
+                Log.e("RideAnalyzer", "Caught subsequent native location/service exception", nextThrowable)
+              } else {
+                defaultHandler?.uncaughtException(thread, nextThrowable)
+                break
+              }
+            }
+          }
+        }
+        return@setDefaultUncaughtExceptionHandler
+      }
+      defaultHandler?.uncaughtException(thread, throwable)
+    }
+  }
+
+  private fun clearStaleTaskManagerState() {
+    try {
+      getSharedPreferences("expo.modules.taskManager", Context.MODE_PRIVATE)
+        .edit()
+        .clear()
+        .apply()
+    } catch (e: Throwable) {
+      Log.w("RideAnalyzer", "Could not clear stale TaskManager preferences", e)
+    }
+  }
+
   override fun onCreate() {
     super.onCreate()
+    installCrashShield()
+    clearStaleTaskManagerState()
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
     } catch (e: IllegalArgumentException) {
