@@ -115,10 +115,12 @@ export function applyLocationUpdateToRide(
     return activeRide;
   }
 
+  // Note: On Android, single fused fixes often report speed = 0 when Doppler speed is unavailable.
+  // Only treat rawSpeed > 0.3 m/s (> 1.08 km/h) as a positive Doppler speed reading.
   const reportedSpeedKmh =
     rawSpeed !== null &&
     Number.isFinite(rawSpeed) &&
-    rawSpeed >= 0 &&
+    rawSpeed > 0.3 &&
     rawSpeed * 3.6 <= MAX_PLAUSIBLE_SPEED_KMH
       ? rawSpeed * 3.6
       : null;
@@ -135,29 +137,28 @@ export function applyLocationUpdateToRide(
     const rawElapsed = (locTimestamp - previous.timestamp) / 1000;
     const wallElapsed = previous.wallTime ? (nowWall - previous.wallTime) / 1000 : rawElapsed;
     const elapsedSeconds =
-      Number.isFinite(rawElapsed) && rawElapsed > 0 && rawElapsed < 36000
+      Number.isFinite(rawElapsed) && rawElapsed > 0.2 && rawElapsed < 36000
         ? rawElapsed
         : Math.max(0, wallElapsed);
 
     const combinedAccuracy = Math.max(accuracy, previous.accuracy ?? 20);
-    const minMoveMetres = Math.max(3, Math.min(combinedAccuracy * 0.35, 12));
-    const isLikelyJitter =
-      distanceDelta < minMoveMetres ||
-      (reportedSpeedKmh !== null &&
-        reportedSpeedKmh < 1.5 &&
-        distanceDelta < Math.max(8, combinedAccuracy * 0.6));
+    const minMoveMetres = Math.max(2.5, Math.min(combinedAccuracy * 0.3, 10));
+    const isLikelyJitter = distanceDelta < minMoveMetres;
 
     if (!isLikelyJitter && elapsedSeconds > 0.2) {
       const impliedSpeedKmh = (distanceDelta / elapsedSeconds) * 3.6;
       if (impliedSpeedKmh <= MAX_PLAUSIBLE_SPEED_KMH) {
         activeRide.distanceMetres += Math.max(0, distanceDelta);
         activeRide.lastMovementAt = nowWall;
-        if (reportedSpeedKmh === null && elapsedSeconds >= 0.8) {
-          computedSpeedKmh = Math.max(0, impliedSpeedKmh);
+        if (elapsedSeconds >= 0.7) {
+          computedSpeedKmh =
+            reportedSpeedKmh !== null
+              ? Math.max(reportedSpeedKmh, impliedSpeedKmh * 0.85)
+              : impliedSpeedKmh;
         }
       }
     } else if (isLikelyJitter) {
-      if (reportedSpeedKmh === null || reportedSpeedKmh < 1.5) {
+      if (reportedSpeedKmh === null || reportedSpeedKmh < 2.5) {
         computedSpeedKmh = 0;
       }
     }

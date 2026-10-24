@@ -219,18 +219,18 @@ export default function RideRecorderScreen() {
     // Prime first reading without blocking or crashing
     void pollSingleLocation();
 
-    // Poll every 1.5s via Promise-based getCurrentPositionAsync (never spawns a native Service or TaskManager)
+    // Poll every 1.5s via Promise-based getCurrentPositionAsync
     pollIntervalRef.current = setInterval(() => {
       void pollSingleLocation();
     }, 1500);
 
-    // Also attach in-process watchPositionAsync if supported
+    // Also stream continuous high-accuracy Doppler GPS updates via watchPositionAsync
     try {
       watchSubscriptionRef.current = await Location.watchPositionAsync(
         {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 1500,
-          distanceInterval: 2,
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 1000,
+          distanceInterval: 1,
         },
         (loc) => {
           void handleLocationSample(loc);
@@ -432,6 +432,8 @@ export default function RideRecorderScreen() {
         });
       }
       const distanceKm = (Number(session.distanceMetres) || 0) / 1000;
+      const averageSpeedKmh =
+        durationSeconds > 0 ? distanceKm / (durationSeconds / 3600) : 0;
       const ride: Ride = {
         id: session.id,
         name: session.name,
@@ -439,9 +441,8 @@ export default function RideRecorderScreen() {
         endAt: endedAt,
         durationSeconds,
         distanceKm,
-        averageSpeedKmh:
-          durationSeconds > 0 ? distanceKm / (durationSeconds / 3600) : 0,
-        topSpeedKmh: Number(session.topSpeedKmh) || 0,
+        averageSpeedKmh,
+        topSpeedKmh: Math.max(Number(session.topSpeedKmh) || 0, averageSpeedKmh),
         locationSamples: session.locationSamples ?? 0,
         waitingSeconds: waitingTotal(waitingPeriods),
         waitingPeriods,

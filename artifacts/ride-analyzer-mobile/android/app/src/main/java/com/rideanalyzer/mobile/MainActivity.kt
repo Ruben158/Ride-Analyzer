@@ -1,8 +1,10 @@
 package com.rideanalyzer.mobile
-import expo.modules.splashscreen.SplashScreenManager
 
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.view.WindowManager
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -12,15 +14,38 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  private var wakeLock: PowerManager.WakeLock? = null
+
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
     // This is required for expo-splash-screen.
-    // setTheme(R.style.AppTheme);
-    // @generated begin expo-splashscreen - expo prebuild (DO NOT MODIFY) sync-f3ff59a738c56c9a6119210cb55f0b613eb8b6af
-    SplashScreenManager.registerOnActivity(this)
-    // @generated end expo-splashscreen
+    setTheme(R.style.AppTheme);
     super.onCreate(null)
+
+    try {
+      window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+      val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+      wakeLock = powerManager?.newWakeLock(
+        PowerManager.PARTIAL_WAKE_LOCK,
+        "RideAnalyzer::RideTrackingWakeLock"
+      )?.apply {
+        setReferenceCounted(false)
+        acquire(4 * 60 * 60 * 1000L) // Up to 4 hours per session
+      }
+    } catch (_: Throwable) {
+      // Non-fatal if wake lock cannot be acquired
+    }
+  }
+
+  override fun onDestroy() {
+    try {
+      if (wakeLock?.isHeld == true) {
+        wakeLock?.release()
+      }
+    } catch (_: Throwable) {
+    }
+    super.onDestroy()
   }
 
   /**
